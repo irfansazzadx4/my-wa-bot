@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: my-wa-bot
+    runtime: node
+    buildCommand: |
+      apt-get update && apt-get install -y \
+        chromium \
+        fonts-liberation \
+        fonts-dejavu-core \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libdrm2 \
+        libexpat1 \
+        libgbm1 \
+        libglib2.0-0 \
+        libgtk-3-0 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libx11-6 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxrandr2 \
+        libxshmfence1 \
+        xdg-utils \
+        --no-install-recommends && \
+      npm install --omit=dev
+    startCommand: node index.js
+    envVars:
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/chromium
+      - key: PORT
+        generateValue: false
+      - key: ADMIN_PASS
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_BRANCH
+        value: main
+    disk:
+      name: bot-data
+      mountPath: /opt/render/project/src
+      sizeGB: 1
