@@ -20,11 +20,10 @@ const API_EXTRACT_URL = "https://auto.onlinebd.top/Signtonid_api_one.php";
 const API_GENERATE_URL = "https://auto.onlinebd.top/bot/nid-bn.php";
 const BASE_URL = "https://auto.onlinebd.top/bot/storage/";
 
-// ====== ADMIN & DATABASE ======
-const ADMIN_NUMBER = "8801846649326@s.whatsapp.net"; 
+// ====== ADMIN & DATABASE (ID Fixed from Logs) ======
+const ADMIN_NUMBER = "241949013491937@lid"; 
 const DATABASE_FILE = "./authorized_numbers.json";
 
-// ডাটাবেস ফাংশনসমূহ
 function getDB() {
     if (!fs.existsSync(DATABASE_FILE)) {
         const initialData = {};
@@ -41,9 +40,7 @@ function saveDB(data) {
 
 function isAuthorized(number) {
     const data = getDB();
-    // অ্যাডমিন সবসময় অনুমোদিত
-    if (number === ADMIN_NUMBER) return true;
-    return data.hasOwnProperty(number);
+    return data.hasOwnProperty(number) || number === ADMIN_NUMBER;
 }
 
 function updateUsage(number) {
@@ -81,16 +78,24 @@ http.createServer(async (req, res) => {
     }
 }).listen(PORT);
 
-// ====== GITHUB SYNC ======
+// ====== GITHUB SYNC (Remote Fixed) ======
 async function pushToGitHub() {
     try {
         const repo = process.env.GITHUB_REPO;
         const token = process.env.GITHUB_TOKEN;
         const branch = process.env.GITHUB_BRANCH || "main";
         if (!repo || !token) return;
+
         execSync(`git config --global user.email "bot@bot.com"`);
         execSync(`git config --global user.name "WA Bot"`);
-        execSync(`git remote set-url origin https://${token}@github.com/${repo}.git`);
+        const remoteUrl = `https://${token}@github.com/${repo}.git`;
+        
+        try {
+            execSync(`git remote add origin ${remoteUrl}`);
+        } catch (e) {
+            execSync(`git remote set-url origin ${remoteUrl}`);
+        }
+
         execSync(`git add -f auth_info_baileys/ authorized_numbers.json`);
         execSync(`git commit -m "update session/db" --allow-empty`);
         execSync(`git push origin ${branch} --force`);
@@ -140,30 +145,24 @@ async function startBot() {
             const args = textMsg.split(" ");
             const command = args[0].toLowerCase();
 
-            // লগে চেক করার জন্য
             console.log(`📩 Message from: ${from} | Text: ${textMsg}`);
 
-            // ১. অ্যাডমিন কমান্ডস
+            // অ্যাডমিন কমান্ডস
             if (from === ADMIN_NUMBER) {
                 if (command === ".ping") {
                     await sock.sendMessage(from, { text: "বট সচল আছে! ✅" });
                     continue;
                 }
                 if (command === ".add") {
-                    const target = args[1]?.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+                    let target = args[1];
+                    if (!target) continue;
+                    if (!target.includes("@")) {
+                        target = target.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+                    }
                     let data = getDB();
                     data[target] = 0;
                     saveDB(data);
-                    await sock.sendMessage(from, { text: `✅ ${args[1]} অনুমোদিত হয়েছে।` });
-                    await pushToGitHub();
-                    continue;
-                }
-                if (command === ".remove") {
-                    const target = args[1]?.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
-                    let data = getDB();
-                    delete data[target];
-                    saveDB(data);
-                    await sock.sendMessage(from, { text: `❌ ${args[1]} রিমুভ হয়েছে।` });
+                    await sock.sendMessage(from, { text: `✅ ${target} এখন অনুমোদিত।` });
                     await pushToGitHub();
                     continue;
                 }
@@ -176,20 +175,26 @@ async function startBot() {
                     await sock.sendMessage(from, { text: listMsg });
                     continue;
                 }
+                if (command === ".remove") {
+                    let target = args[1]?.includes("@") ? args[1] : args[1]?.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+                    let data = getDB();
+                    delete data[target];
+                    saveDB(data);
+                    await sock.sendMessage(from, { text: `❌ ${target} রিমুভ করা হয়েছে।` });
+                    await pushToGitHub();
+                    continue;
+                }
             }
 
-            // ২. অ্যাক্সেস কন্ট্রোল
-            if (!isAuthorized(from)) {
-                console.log(`🚫 Unauthorized: ${from}`);
-                continue;
-            }
+            // অ্যাক্সেস কন্ট্রোল
+            if (!isAuthorized(from)) continue;
 
-            // ৩. NID প্রসেসিং
+            // NID প্রসেসিং
             if (m.message.documentMessage) {
                 if (!m.message.documentMessage.mimetype.includes("pdf")) continue;
                 
                 try {
-                    await sock.sendMessage(from, { text: "⏳ প্রসেসিং..." });
+                    await sock.sendMessage(from, { text: "⏳ প্রসেসিং শুরু হচ্ছে..." });
                     const pdfBuffer = await downloadMediaMessage(m, "buffer", {});
                     
                     const form = new FormData();
@@ -198,9 +203,8 @@ async function startBot() {
                     const apiRes = await axios.post(API_EXTRACT_URL, form, { headers: form.getHeaders(), timeout: 60000 });
                     const d = apiRes.data.data;
                     
-                    if (!d) throw new Error("API ডাটা দিতে পারেনি।");
+                    if (!d) throw new Error("API ডাটা দিতে পারেনি। ফাইলটি সঠিক কি না দেখুন।");
 
-                    // কার্ড জেনারেট
                     const params = new URLSearchParams();
                     const images = d.images || [];
                     const mapped = {
@@ -226,7 +230,7 @@ async function startBot() {
 
                     updateUsage(from);
                     await sock.sendMessage(from, { 
-                        text: `✅ *কার্ড প্রস্তুত!*\n👤 নাম: ${mapped.nameBangla}\n🔗 লিংক: ${cardLink}` 
+                        text: `✅ *NID কার্ড প্রস্তুত!*\n👤 নাম: ${mapped.nameBangla}\n🪪 NID: ${mapped.nid}\n🔗 লিংক: ${cardLink}` 
                     }, { quoted: m });
 
                 } catch (e) {
