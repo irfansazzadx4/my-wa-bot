@@ -16,9 +16,9 @@ const axios = require("axios");
 const fs = require("fs");
 
 // ====== CONFIG ======
-const API_EXTRACT_URL = "https://server24.kesug.com/Signtonid_api_one.php";
-const API_GENERATE_URL = "https://server24.kesug.com/bot/nid-bn.php";
-const BASE_URL = "https://server24.kesug.com/bot/storage/";
+const API_EXTRACT_URL = "https://auto.onlinebd.top/Signtonid_api_one.php";
+const API_GENERATE_URL = "https://auto.onlinebd.top/bot/nid-bn.php";
+const BASE_URL = "https://auto.onlinebd.top/bot/storage/";
 
 // ====== SERVER ======
 const PORT = process.env.PORT || 3000;
