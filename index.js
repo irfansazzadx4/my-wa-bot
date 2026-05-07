@@ -1,74 +1,71 @@
-global.crypto = require('crypto');
-const { 
-    default: makeWASocket, 
-    useMultiFileAuthState, 
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
     DisconnectReason,
     delay,
-    fetchLatestBaileysVersion
-} = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    jmp
+} = require("@whiskeysockets/baileys");
+const pino = require("pino");
+const { Boom } = require("@hapi/boom");
 
-async function connectToWhatsApp() {
+async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
-        auth: state,
-        version,
-        printQRInTerminal: false, // টার্মিনালে QR দেখাবে না
-        browser: ["Ubuntu", "Chrome", "121.0.6167.184"], // আধুনিক ব্রাউজার ভার্সন
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: undefined,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+        },
+        printQRInTerminal: false,
+        logger: pino({ level: "fatal" }),
+        browser: ["Ubuntu", "Chrome", "121.0.6167.184"], // Updated Browser
+        version
     });
 
-    // পেয়ারিং কোড লজিক - কানেকশন ওপেন হওয়ার আগেই এটি রান করতে হয়
+    // Pairing Code System
     if (!sock.authState.creds.registered) {
-        const phoneNumber = "8801846649326"; // আপনার নম্বর
+        const phoneNumber = "8801846649326"; // আপনার হোয়াটসঅ্যাপ নম্বর
         setTimeout(async () => {
             try {
-                const code = await sock.requestPairingCode(phoneNumber);
-                console.log('----------------------------');
-                console.log(`📱 আপনার পেয়ারিং কোড: ${code}`);
-                console.log('----------------------------');
-            } catch (err) {
-                console.error('❌ পেয়ারিং কোড রিকোয়েস্ট এরর:', err.message);
+                let code = await sock.requestPairingCode(phoneNumber);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log("\n---------------------------------------");
+                console.log(`📱 আপনার হোয়াটসঅ্যাপ পেয়ারিং কোড: ${code}`);
+                console.log("---------------------------------------\n");
+            } catch (error) {
+                console.error("Pairing Code Error:", error);
             }
-        }, 5000); // ৫ সেকেন্ড অপেক্ষা যাতে সকেট তৈরি হতে পারে
+        }, 5000); 
     }
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on('connection.update', async (update) => {
+    sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect } = update;
-
-        if (connection === 'open') {
-            console.log('✅ সফলভাবে কানেক্ট হয়েছে!');
-        }
-
-        if (connection === 'close') {
-            const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            console.log('❌ কানেকশন বন্ধ হয়েছে। কারণ কোড:', reason);
-            
-            if (reason !== DisconnectReason.loggedOut) {
-                console.log('🔄 আবার কানেক্ট করার চেষ্টা করা হচ্ছে...');
-                connectToWhatsApp();
-            } else {
-                console.log('🚫 লগ আউট হয়েছে। ফোল্ডার ডিলিট করে নতুন করে রান করুন।');
-            }
+        if (connection === "close") {
+            const shouldReconnect = (lastDisconnect.error instanceof Boom) ? 
+                lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
+            console.log("কানেকশন বন্ধ হয়েছে, পুনরায় চেষ্টা করা হচ্ছে...", shouldReconnect);
+            if (shouldReconnect) startBot();
+        } else if (connection === "open") {
+            console.log("✅ বট সফলভাবে সচল হয়েছে!");
         }
     });
 
-    sock.ev.on('messages.upsert', async ({ messages }) => {
+    sock.ev.on("messages.upsert", async ({ messages }) => {
         const m = messages[0];
-        if (!m.message) return;
-        
-        const messageType = Object.keys(m.message)[0];
-        const text = m.message.conversation || m.message.extendedTextMessage?.text;
+        if (!m.message || m.key.fromMe) return;
 
-        if (text === '.ping') {
-            await sock.sendMessage(m.key.remoteJid, { text: 'Pong! 🏓' });
+        const msgText = m.message.conversation || m.message.extendedTextMessage?.text;
+        const remoteJid = m.key.remoteJid;
+
+        if (msgText === ".ping") {
+            await sock.sendMessage(remoteJid, { text: "Pong! 🏓 বট সচল আছে।" });
         }
     });
 }
 
-connectToWhatsApp().catch(err => console.error("Unexpected error:", err));
+startBot().catch(err => console.log("Error: " + err));
