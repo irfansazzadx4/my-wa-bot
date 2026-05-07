@@ -20,7 +20,7 @@ const fs        = require("fs");
 const os        = require("os");
 const path      = require("path");
 const crypto    = require("crypto");
-const puppeteer = require("puppeteer-core");
+const puppeteer = require("puppeteer");
 
 // ============================================================
 //  CONFIG
@@ -296,34 +296,8 @@ async function htmlToPdfBuffer(html) {
 
     let browser;
     try {
-        // Chromium খোঁজার order: env var → common paths
-        const chromePaths = [
-            process.env.PUPPETEER_EXECUTABLE_PATH,
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-        ].filter(Boolean);
-
-        let executablePath = null;
-        for (const p of chromePaths) {
-            try {
-                if (require("fs").existsSync(p)) { executablePath = p; break; }
-            } catch {}
-        }
-
-        if (!executablePath) {
-            throw new Error(
-                "Chromium পাওয়া যায়নি। Render এ Build Command এ chromium install করুন।\n" +
-                "Build Command: apt-get install -y chromium && npm install"
-            );
-        }
-
-        console.log(`🌐 Chrome path: ${executablePath}`);
-
         browser = await puppeteer.launch({
-            headless        : true,
-            executablePath,
+            headless: "new",
             args: [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
