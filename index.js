@@ -4,24 +4,53 @@ const {
     DisconnectReason,
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
-    delay
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const http = require("http");
+const qrcode = require("qrcode");
 
-// ১. Render Port Binding Fix (যাতে সার্ভার বন্ধ না হয়)
+// ১. Render Port Binding + QR Server
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('WhatsApp Bot is running properly...\n');
+let lastQR = "";
+let isConnected = false;
+
+http.createServer(async (req, res) => {
+    if (isConnected) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`<html><body style="text-align:center;background:#111;color:#0f0;font-family:sans-serif">
+            <h2>✅ WhatsApp Bot Connected!</h2>
+            <p>বট সফলভাবে কানেক্ট হয়েছে।</p>
+        </body></html>`);
+    } else if (lastQR) {
+        try {
+            const qrImage = await qrcode.toDataURL(lastQR);
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end(`<html><body style="text-align:center;background:#111;color:#fff;font-family:sans-serif">
+                <h2>📱 WhatsApp QR Code</h2>
+                <img src="${qrImage}" style="width:280px;border:4px solid #25D366;border-radius:12px"/>
+                <p>WhatsApp → Linked Devices → Link a Device → QR Scan করুন</p>
+                <p style="color:orange">⚠️ QR মেয়াদ শেষ হলে page refresh করুন</p>
+                <meta http-equiv="refresh" content="30">
+            </body></html>`);
+        } catch (e) {
+            res.writeHead(500);
+            res.end("QR generate error");
+        }
+    } else {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`<html><body style="text-align:center;background:#111;color:#fff;font-family:sans-serif">
+            <h2>⏳ QR লোড হচ্ছে...</h2>
+            <p>১০ সেকেন্ড পর page refresh হবে</p>
+            <meta http-equiv="refresh" content="10">
+        </body></html>`);
+    }
 }).listen(PORT, () => {
-    console.log(`✅ Fake server running on port ${PORT}`);
+    console.log(`✅ Server running on port ${PORT}`);
 });
 
 async function startBot() {
-    // সেশন সেভ করার জন্য ফোল্ডার (GitHub এ এই ফোল্ডারটি পুশ করবেন না)
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
@@ -29,55 +58,46 @@ async function startBot() {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
         },
-        printQRInTerminal: false, // QR কোড ভেঙে যায় তাই এটি বন্ধ রাখা হয়েছে
+        printQRInTerminal: false,
         logger: pino({ level: "fatal" }),
-        browser: ["Ubuntu", "Chrome", "121.0.6167.184"],
+        browser: ["Chrome (Linux)", "Chrome", "121.0.0"],
         version,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: undefined,
     });
 
-    // ২. শক্তিশালী পেয়ারিং কোড লজিক
-    if (!sock.authState.creds.registered) {
-        console.log("⏳ পেয়ারিং কোড তৈরির চেষ্টা করা হচ্ছে... ১৫ সেকেন্ড অপেক্ষা করুন।");
-        
-        setTimeout(async () => {
-            try {
-                const phoneNumber = "8801846649326"; // আপনার নম্বর
-                let code = await sock.requestPairingCode(phoneNumber);
-                code = code?.match(/.{1,4}/g)?.join("-") || code;
-                
-                console.log("\n=======================================");
-                console.log(`📱 আপনার পেয়ারিং কোড: ${code}`);
-                console.log("=======================================\n");
-            } catch (error) {
-                console.error("❌ পেয়ারিং কোড এরর:", error.message);
-                console.log("পরামর্শ: Render থেকে 'Clear Build Cache & Deploy' দিন।");
-            }
-        }, 5000); // সকেট স্ট্যাবল হওয়ার জন্য ১৫ সেকেন্ড সময় দেওয়া হলো
-    }
-
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            lastQR = qr;
+            isConnected = false;
+            console.log("✅ QR Ready! Browser এ গিয়ে scan করুন।");
+        }
+
+        if (connection === "open") {
+            lastQR = "";
+            isConnected = true;
+            console.log("✅ WhatsApp Bot সফলভাবে কানেক্ট হয়েছে!");
+        }
 
         if (connection === "close") {
+            isConnected = false;
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            console.log("❌ কানেকশন বন্ধ হয়েছে। কারণ কোড:", reason);
-            
+            console.log("❌ কানেকশন বন্ধ। কারণ কোড:", reason);
+
             if (reason !== DisconnectReason.loggedOut) {
-                console.log("🔄 পুনরায় কানেক্ট করার চেষ্টা করা হচ্ছে...");
+                console.log("🔄 পুনরায় কানেক্ট করা হচ্ছে...");
                 startBot();
             } else {
-                console.log("🚫 লগ আউট হয়েছে। অনুগ্রহ করে নতুন করে পেয়ারিং কোড নিন।");
+                console.log("🚫 লগ আউট হয়েছে। auth_info_baileys ফোল্ডার মুছে নতুন করে deploy করুন।");
             }
-        } else if (connection === "open") {
-            console.log("✅ হোয়াটসঅ্যাপ বট সফলভাবে কানেক্ট হয়েছে!");
         }
     });
 
-    // ৩. মেসেজ হ্যান্ডেলিং (টেস্ট কমান্ড: .ping)
+    // মেসেজ হ্যান্ডেলিং
     sock.ev.on("messages.upsert", async ({ messages }) => {
         const m = messages[0];
         if (!m.message || m.key.fromMe) return;
@@ -91,5 +111,4 @@ async function startBot() {
     });
 }
 
-// প্রসেস শুরু করুন
 startBot().catch(err => console.error("Critical Error:", err));
