@@ -2,13 +2,11 @@ services:
   - type: web
     name: my-wa-bot
     runtime: node
-    buildCommand: apt-get update && apt-get install -y chromium --no-install-recommends && npm install
+    buildCommand: npm install
     startCommand: node index.js
     envVars:
-      - key: PUPPETEER_EXECUTABLE_PATH
-        value: /usr/bin/chromium
-      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
-        value: "true"
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/src/.puppeteer-cache
       - key: PORT
         generateValue: false
       - key: ADMIN_PASS
