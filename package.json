@@ -13,7 +13,7 @@
     "form-data": "^4.0.0",
     "qrcode": "^1.5.3",
     "pino": "^8.19.0",
-    "puppeteer-core": "^23.0.0"
+    "puppeteer": "^23.0.0"
   },
   "author": "Irfan",
   "license": "ISC"
