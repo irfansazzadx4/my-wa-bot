@@ -1,3 +1,5 @@
+console.log("🚀 BOT STARTING...");
+
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -6,15 +8,16 @@ const {
     makeCacheableSignalKeyStore,
     downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
-const pino       = require("pino");
-const { Boom }   = require("@hapi/boom");
-const http       = require("http");
-const qrcode     = require("qrcode");
+
+const pino = require("pino");
+const { Boom } = require("@hapi/boom");
+const http = require("http");
+const qrcode = require("qrcode");
 const { execSync } = require("child_process");
-const FormData   = require("form-data");
-const axios      = require("axios");
-const fs         = require("fs");
-const path       = require("path");
+const FormData = require("form-data");
+const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
 
 // ============================================================
 //  CONFIG
@@ -74,36 +77,104 @@ let isConnected = false;
 const adminSessions = new Set(); // simple in-memory auth
 
 http.createServer(async (req, res) => {
-    const url  = new URL(req.url, `http://localhost`);
+
+    const url = new URL(req.url, `http://localhost`);
     const path_ = url.pathname;
 
-    // ── Admin panel ──
+    // TEST ROUTE
+    if (path_ === "/test") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        return res.end("OK BOT RUNNING");
+    }
+
+    // ADMIN PANEL
     if (path_ === "/admin" || path_.startsWith("/admin")) {
         await handleAdmin(req, res, url);
         return;
     }
 
-    // ── Root: QR / status ──
+    // BOT CONNECTED
     if (isConnected) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(htmlPage("✅ Bot Connected", `<div class="connected">✅ WhatsApp Bot সংযুক্ত!</div>
-            <a href="/admin" class="btn">Admin Panel →</a>`));
-    } else if (lastQR) {
-        try {
-            const qrImg = await qrcode.toDataURL(lastQR);
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            res.end(htmlPage("QR Code", `
-                <h2>📱 WhatsApp QR Scan করুন</h2>
-                <img src="${qrImg}" style="width:260px;border:4px solid #25D366;border-radius:12px">
-                <p>WhatsApp → Linked Devices → Link a Device</p>
-                <meta http-equiv="refresh" content="30">`));
-        } catch { res.writeHead(500); res.end("QR error"); }
-    } else {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(htmlPage("Loading", `<h2>⏳ QR লোড হচ্ছে...</h2><meta http-equiv="refresh" content="8">`));
+
+        res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8"
+        });
+
+        return res.end(
+            htmlPage(
+                "✅ Bot Connected",
+                `<div class="connected">
+                    ✅ WhatsApp Bot সংযুক্ত!
+                </div>
+
+                <a href="/admin" class="btn">
+                    Admin Panel →
+                </a>`
+            )
+        );
     }
 
-}).listen(CONFIG.PORT, () => console.log(`✅ Server: http://localhost:${CONFIG.PORT}`));
+    // SHOW QR
+    if (lastQR) {
+        try {
+
+            const qrImg = await qrcode.toDataURL(lastQR);
+
+            res.writeHead(200, {
+                "Content-Type": "text/html; charset=utf-8"
+            });
+
+            return res.end(
+                htmlPage(
+                    "QR Code",
+                    `
+                    <h2>📱 WhatsApp QR Scan করুন</h2>
+
+                    <img
+                        src="${qrImg}"
+                        style="
+                            width:260px;
+                            border:4px solid #25D366;
+                            border-radius:12px
+                        "
+                    >
+
+                    <p>
+                        WhatsApp → Linked Devices → Link a Device
+                    </p>
+
+                    <meta http-equiv="refresh" content="30">
+                    `
+                )
+            );
+
+        } catch {
+
+            res.writeHead(500);
+            return res.end("QR error");
+        }
+    }
+
+    // LOADING
+    res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8"
+    });
+
+    res.end(
+        htmlPage(
+            "Loading",
+            `
+            <h2>⏳ QR লোড হচ্ছে...</h2>
+            <meta http-equiv="refresh" content="8">
+            `
+        )
+    );
+
+}).listen(CONFIG.PORT, () => {
+
+    console.log(`✅ Server: http://localhost:${CONFIG.PORT}`);
+
+});
 
 // ============================================================
 //  ADMIN PANEL HANDLER
