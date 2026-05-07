@@ -52,12 +52,23 @@ function getUsers()   { return loadJSON(CONFIG.USERS_FILE, []); }
 function saveUsers(u) { saveJSON(CONFIG.USERS_FILE, u); }
 function getStats()   { return loadJSON(CONFIG.STATS_FILE, {}); }
 
+// number normalize — সব format কে একই রূপে আনো
+// WhatsApp JID: 8801XXXXXXXXX, Admin input: 01XXXXXXXXX বা 8801XXXXXXXXX
+function normalizeNumber(num) {
+    let n = String(num).replace(/\D/g, ""); // শুধু digits রাখো
+    // 11 digit এবং শুরু 01 → বাংলাদেশ, 880 যোগ করো
+    if (n.length === 11 && n.startsWith("01")) {
+        n = "880" + n.slice(1); // 01XXXXXXXXX → 8801XXXXXXXXX
+    }
+    return n;
+}
+
 function isAllowed(number) {
     const users = getUsers();
-    // ✅ FIX #3: empty users হলে সবাইকে allow না করে false return
-    // শুধু explicitly active user রাই access পাবে
     if (users.length === 0) return false;
-    const u = users.find(x => x.number === number);
+    const normalized = normalizeNumber(number);
+    console.log(`🔍 isAllowed check: raw=${number} normalized=${normalized}`);
+    const u = users.find(x => normalizeNumber(x.number) === normalized);
     return u && (u.active !== false);
 }
 
@@ -166,11 +177,12 @@ async function handleAdmin(req, res, url) {
         }
 
         if (action === "add") {
-            const number = (params.get("number") || "").replace(/\D/g, "");
+            const rawNum = (params.get("number") || "").replace(/\D/g, "");
+            const number = normalizeNumber(rawNum); // সবসময় 8801XXXXXXXXX format এ save
             const name   = (params.get("name")   || "").trim();
             if (number) {
                 const users = getUsers();
-                if (!users.find(u => u.number === number)) {
+                if (!users.find(u => normalizeNumber(u.number) === number)) {
                     users.push({ number, name, active: true, added: new Date().toLocaleString("bn-BD") });
                     saveUsers(users);
                 }
