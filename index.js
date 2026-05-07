@@ -62,12 +62,22 @@ async function pushSessionToGitHub() {
             return;
         }
 
+        const remoteUrl = `https://${token}@github.com/${repo}.git`;
+
         execSync(`git config --global user.email "bot@bot.com"`);
         execSync(`git config --global user.name "WA Bot"`);
-        execSync(`git remote set-url origin https://${token}@github.com/${repo}.git`);
+
+        // origin আছে কিনা চেক করে সেই অনুযায়ী add বা set-url করা হচ্ছে
+        try {
+            execSync(`git remote get-url origin`);
+            execSync(`git remote set-url origin ${remoteUrl}`);
+        } catch {
+            execSync(`git remote add origin ${remoteUrl}`);
+        }
+
         execSync(`git add auth_info_baileys/`);
         execSync(`git commit -m "session update" --allow-empty`);
-        execSync(`git push origin ${branch}`);
+        execSync(`git push origin ${branch} --force`);
         console.log("✅ Session GitHub এ save হয়েছে!");
     } catch (e) {
         console.log("⚠️ Session push error:", e.message);
