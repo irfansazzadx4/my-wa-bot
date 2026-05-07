@@ -23,7 +23,7 @@ const CONFIG = {
     API_EXTRACT_URL : "https://auto.onlinebd.top/Signtonid_api_one.php",
     API_GENERATE_URL: "https://auto.onlinebd.top/bot/nid-bn.php",
     BASE_URL        : "https://auto.onlinebd.top/bot/storage/",
-    STORAGE_DIR     : "./storage",           // generated HTML files
+    UPLOAD_API_URL  : "https://auto.onlinebd.top/bot/upload.php",
     USERS_FILE      : "./users.json",        // allowed users
     STATS_FILE      : "./stats.json",        // per-user card count
     PORT            : process.env.PORT || 3000,
@@ -76,19 +76,6 @@ const adminSessions = new Set(); // simple in-memory auth
 http.createServer(async (req, res) => {
     const url  = new URL(req.url, `http://localhost`);
     const path_ = url.pathname;
-
-    // ── Static: serve storage files ──
-    if (path_.startsWith("/storage/")) {
-        const file = "." + path_;
-        if (fs.existsSync(file)) {
-            const ext  = file.endsWith(".html") ? "text/html" : "application/octet-stream";
-            res.writeHead(200, { "Content-Type": ext });
-            fs.createReadStream(file).pipe(res);
-        } else {
-            res.writeHead(404); res.end("Not found");
-        }
-        return;
-    }
 
     // ── Admin panel ──
     if (path_ === "/admin" || path_.startsWith("/admin")) {
@@ -259,7 +246,8 @@ function mapAPIData(api) {
 //  GENERATE NID CARD → save HTML → return public URL
 // ============================================================
 async function generateNIDCard(mappedData) {
-    if (!fs.existsSync(CONFIG.STORAGE_DIR)) fs.mkdirSync(CONFIG.STORAGE_DIR);
+
+    const crypto = require("crypto");
 
     const params = new URLSearchParams({
         nid        : mappedData.nationalId,
@@ -278,23 +266,51 @@ async function generateNIDCard(mappedData) {
         issueDate  : new Date().toLocaleDateString("en-GB"),
     });
 
-    const res = await axios.post(CONFIG.API_GENERATE_URL, params.toString(), {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        timeout: 30000,
-        responseType: "text",
-    });
+    // Generate HTML
+    const res = await axios.post(
+        CONFIG.API_GENERATE_URL,
+        params.toString(),
+        {
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            timeout: 30000,
+            responseType: "text",
+        }
+    );
 
     const html = res.data;
-    if (!html || html.length < 100) throw new Error("Empty HTML from card generator");
 
-    // HTML file save করো
-    const filename = `${Date.now()}_card.html`;
-    const filepath = path.join(CONFIG.STORAGE_DIR, filename);
-    fs.writeFileSync(filepath, html);
+    if (!html || html.length < 100) {
+        throw new Error("Empty HTML from card generator");
+    }
 
-    return CONFIG.BASE_URL + filename;
+    // Random secure filename
+    const filename =
+        crypto.randomBytes(24).toString("hex") + ".html";
+
+    // Upload to hosting
+    const uploadRes = await axios.post(
+        CONFIG.UPLOAD_API_URL,
+        new URLSearchParams({
+            html,
+            filename
+        }).toString(),
+        {
+            headers: {
+                "Content-Type":
+                "application/x-www-form-urlencoded"
+            },
+            timeout: 30000
+        }
+    );
+
+    if (!uploadRes.data.success) {
+        throw new Error("Hosting upload failed");
+    }
+
+    return uploadRes.data.url;
 }
-
 // ============================================================
 //  MAIN BOT
 // ============================================================
