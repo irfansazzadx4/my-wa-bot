@@ -291,7 +291,13 @@ async function htmlToPdfBuffer(html) {
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-extensions",
+                "--single-process",          // Render free tier এ জরুরি
+                "--no-zygote",               // Render sandbox issue fix
+                "--font-render-hinting=none",
             ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
         });
 
         const page = await browser.newPage();
