@@ -54,7 +54,7 @@ async function startBot() {
                 console.error("❌ পেয়ারিং কোড এরর:", error.message);
                 console.log("পরামর্শ: Render থেকে 'Clear Build Cache & Deploy' দিন।");
             }
-        }, 15000); // সকেট স্ট্যাবল হওয়ার জন্য ১৫ সেকেন্ড সময় দেওয়া হলো
+        }, 5000); // সকেট স্ট্যাবল হওয়ার জন্য ১৫ সেকেন্ড সময় দেওয়া হলো
     }
 
     sock.ev.on("creds.update", saveCreds);
