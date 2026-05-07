@@ -9,6 +9,7 @@ const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const http = require("http");
 const qrcode = require("qrcode");
+const { execSync } = require("child_process");
 
 // ১. Render Port Binding + QR Server
 const PORT = process.env.PORT || 3000;
@@ -49,6 +50,30 @@ http.createServer(async (req, res) => {
     console.log(`✅ Server running on port ${PORT}`);
 });
 
+// ২. GitHub এ Session Save করার Function
+async function pushSessionToGitHub() {
+    try {
+        const repo = process.env.GITHUB_REPO;
+        const token = process.env.GITHUB_TOKEN;
+        const branch = process.env.GITHUB_BRANCH || "main";
+
+        if (!repo || !token) {
+            console.log("⚠️ GitHub credentials নেই, session save হবে না।");
+            return;
+        }
+
+        execSync(`git config --global user.email "bot@bot.com"`);
+        execSync(`git config --global user.name "WA Bot"`);
+        execSync(`git remote set-url origin https://${token}@github.com/${repo}.git`);
+        execSync(`git add auth_info_baileys/`);
+        execSync(`git commit -m "session update" --allow-empty`);
+        execSync(`git push origin ${branch}`);
+        console.log("✅ Session GitHub এ save হয়েছে!");
+    } catch (e) {
+        console.log("⚠️ Session push error:", e.message);
+    }
+}
+
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
     const { version } = await fetchLatestBaileysVersion();
@@ -81,6 +106,7 @@ async function startBot() {
             lastQR = "";
             isConnected = true;
             console.log("✅ WhatsApp Bot সফলভাবে কানেক্ট হয়েছে!");
+            await pushSessionToGitHub();
         }
 
         if (connection === "close") {
@@ -97,7 +123,7 @@ async function startBot() {
         }
     });
 
-    // মেসেজ হ্যান্ডেলিং
+    // ৩. মেসেজ হ্যান্ডেলিং
     sock.ev.on("messages.upsert", async ({ messages }) => {
         const m = messages[0];
         if (!m.message || m.key.fromMe) return;
