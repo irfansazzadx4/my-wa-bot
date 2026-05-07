@@ -9,15 +9,18 @@ const {
     downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
 
-const pino = require("pino");
-const { Boom } = require("@hapi/boom");
-const http = require("http");
-const qrcode = require("qrcode");
+const pino      = require("pino");
+const { Boom }  = require("@hapi/boom");
+const http      = require("http");
+const qrcode    = require("qrcode");
 const { execSync } = require("child_process");
-const FormData = require("form-data");
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
+const FormData  = require("form-data");
+const axios     = require("axios");
+const fs        = require("fs");
+const os        = require("os");
+const path      = require("path");
+const crypto    = require("crypto");
+const puppeteer = require("puppeteer");
 
 // ============================================================
 //  CONFIG
@@ -27,10 +30,11 @@ const CONFIG = {
     API_GENERATE_URL: "https://auto.onlinebd.top/bot/nid-bn.php",
     BASE_URL        : "https://auto.onlinebd.top/bot/storage/",
     UPLOAD_API_URL  : "https://auto.onlinebd.top/bot/upload.php",
-    USERS_FILE      : "./users.json",        // allowed users
-    STATS_FILE      : "./stats.json",        // per-user card count
+    USERS_FILE      : "./users.json",
+    STATS_FILE      : "./stats.json",
     PORT            : process.env.PORT || 3000,
     ADMIN_PASS      : process.env.ADMIN_PASS || "admin123",
+    TEMP_DIR        : os.tmpdir(), // temporary PDF/HTML ফাইল রাখার জায়গা
 };
 
 // ============================================================
@@ -44,14 +48,15 @@ function saveJSON(file, data) {
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-function getUsers()       { return loadJSON(CONFIG.USERS_FILE, []); }
-function saveUsers(u)     { saveJSON(CONFIG.USERS_FILE, u); }
-function getStats()       { return loadJSON(CONFIG.STATS_FILE, {}); }
+function getUsers()   { return loadJSON(CONFIG.USERS_FILE, []); }
+function saveUsers(u) { saveJSON(CONFIG.USERS_FILE, u); }
+function getStats()   { return loadJSON(CONFIG.STATS_FILE, {}); }
 
 function isAllowed(number) {
     const users = getUsers();
-    // কোনো user না থাকলে সবাইকে allow করো (initial setup)
-    if (users.length === 0) return true;
+    // ✅ FIX #3: empty users হলে সবাইকে allow না করে false return
+    // শুধু explicitly active user রাই access পাবে
+    if (users.length === 0) return false;
     const u = users.find(x => x.number === number);
     return u && (u.active !== false);
 }
@@ -68,144 +73,99 @@ function recordStat(number, name) {
 // ============================================================
 //  QR / CONNECTION STATE
 // ============================================================
-let lastQR = "";
+let lastQR      = "";
 let isConnected = false;
 
 // ============================================================
 //  HTTP SERVER — QR page + Admin panel
 // ============================================================
-const adminSessions = new Set(); // simple in-memory auth
+const adminSessions = new Set();
 
 http.createServer(async (req, res) => {
 
-    const url = new URL(req.url, `http://localhost`);
-    const path_ = url.pathname;
+    const url  = new URL(req.url, `http://localhost`);
+    const reqPath = url.pathname; // ✅ FIX #4: 'path_' নামে রাখা (path module এর সাথে conflict এড়াতে)
 
-    // TEST ROUTE
-    if (path_ === "/test") {
+    if (reqPath === "/test") {
         res.writeHead(200, { "Content-Type": "text/plain" });
         return res.end("OK BOT RUNNING");
     }
 
-    // ADMIN PANEL
-    if (path_ === "/admin" || path_.startsWith("/admin")) {
+    if (reqPath === "/admin" || reqPath.startsWith("/admin")) {
         await handleAdmin(req, res, url);
         return;
     }
 
-    // BOT CONNECTED
     if (isConnected) {
-
-        res.writeHead(200, {
-            "Content-Type": "text/html; charset=utf-8"
-        });
-
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         return res.end(
             htmlPage(
                 "✅ Bot Connected",
-                `<div class="connected">
-                    ✅ WhatsApp Bot সংযুক্ত!
-                </div>
-
-                <a href="/admin" class="btn">
-                    Admin Panel →
-                </a>`
+                `<div class="connected">✅ WhatsApp Bot সংযুক্ত!</div>
+                 <a href="/admin" class="btn">Admin Panel →</a>`
             )
         );
     }
 
-    // SHOW QR
     if (lastQR) {
         try {
-
             const qrImg = await qrcode.toDataURL(lastQR);
-
-            res.writeHead(200, {
-                "Content-Type": "text/html; charset=utf-8"
-            });
-
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
             return res.end(
                 htmlPage(
                     "QR Code",
-                    `
-                    <h2>📱 WhatsApp QR Scan করুন</h2>
-
-                    <img
-                        src="${qrImg}"
-                        style="
-                            width:260px;
-                            border:4px solid #25D366;
-                            border-radius:12px
-                        "
-                    >
-
-                    <p>
-                        WhatsApp → Linked Devices → Link a Device
-                    </p>
-
-                    <meta http-equiv="refresh" content="30">
-                    `
+                    `<h2>📱 WhatsApp QR Scan করুন</h2>
+                     <img src="${qrImg}" style="width:260px;border:4px solid #25D366;border-radius:12px">
+                     <p>WhatsApp → Linked Devices → Link a Device</p>
+                     <meta http-equiv="refresh" content="30">`
                 )
             );
-
         } catch {
-
             res.writeHead(500);
             return res.end("QR error");
         }
     }
 
-    // LOADING
-    res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8"
-    });
-
-    res.end(
-        htmlPage(
-            "Loading",
-            `
-            <h2>⏳ QR লোড হচ্ছে...</h2>
-            <meta http-equiv="refresh" content="8">
-            `
-        )
-    );
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(htmlPage("Loading", `<h2>⏳ QR লোড হচ্ছে...</h2><meta http-equiv="refresh" content="8">`));
 
 }).listen(CONFIG.PORT, () => {
-
     console.log(`✅ Server: http://localhost:${CONFIG.PORT}`);
-
 });
 
 // ============================================================
 //  ADMIN PANEL HANDLER
 // ============================================================
 async function handleAdmin(req, res, url) {
-    // cookie-based session
     const cookies = parseCookies(req.headers.cookie || "");
     const authed  = cookies.admin_sess && adminSessions.has(cookies.admin_sess);
 
-    // POST handling
     if (req.method === "POST") {
-        const body = await readBody(req);
+        const body   = await readBody(req);
         const params = new URLSearchParams(body);
+        const action = params.get("action");
 
-        // Login
-        if (params.get("action") === "login") {
+        // ✅ FIX #5: if-else if chain — একটি action এর পরে অন্যটি execute হবে না
+        if (action === "login") {
             if (params.get("pass") === CONFIG.ADMIN_PASS) {
-                const sess = Math.random().toString(36).slice(2);
+                const sess = crypto.randomBytes(16).toString("hex"); // ✅ FIX #6: Math.random এর বদলে crypto
                 adminSessions.add(sess);
-                res.writeHead(302, { "Set-Cookie": `admin_sess=${sess}; Path=/`, "Location": "/admin" });
-                res.end(); return;
+                res.writeHead(302, { "Set-Cookie": `admin_sess=${sess}; Path=/; HttpOnly`, "Location": "/admin" });
+                res.end();
             } else {
                 res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-                res.end(adminLogin("❌ ভুল পাসওয়ার্ড!")); return;
+                res.end(adminLogin("❌ ভুল পাসওয়ার্ড!"));
             }
+            return;
         }
 
-        if (!authed) { res.writeHead(302, { Location: "/admin" }); res.end(); return; }
+        if (!authed) {
+            res.writeHead(302, { Location: "/admin" });
+            res.end();
+            return;
+        }
 
-        // Add user
-        if (params.get("action") === "add") {
+        if (action === "add") {
             const number = (params.get("number") || "").replace(/\D/g, "");
             const name   = (params.get("name")   || "").trim();
             if (number) {
@@ -215,38 +175,36 @@ async function handleAdmin(req, res, url) {
                     saveUsers(users);
                 }
             }
-        }
-        // Toggle
-        if (params.get("action") === "toggle") {
-            const num = params.get("number");
+        } else if (action === "toggle") {
+            const num   = params.get("number");
             const users = getUsers();
-            const u = users.find(x => x.number === num);
+            const u     = users.find(x => x.number === num);
             if (u) u.active = !u.active;
             saveUsers(users);
-        }
-        // Delete
-        if (params.get("action") === "delete") {
+        } else if (action === "delete") {
             const num = params.get("number");
             saveUsers(getUsers().filter(u => u.number !== num));
-        }
-        // Logout
-        if (params.get("action") === "logout") {
+        } else if (action === "logout") {
             adminSessions.delete(cookies.admin_sess);
             res.writeHead(302, { "Set-Cookie": "admin_sess=; Path=/; Max-Age=0", "Location": "/admin" });
-            res.end(); return;
+            res.end();
+            return;
         }
 
-        res.writeHead(302, { Location: "/admin" }); res.end(); return;
+        res.writeHead(302, { Location: "/admin" });
+        res.end();
+        return;
     }
 
     // GET
     if (!authed) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(adminLogin("")); return;
+        res.end(adminLogin(""));
+        return;
     }
 
-    const users = getUsers();
-    const stats = getStats();
+    const users      = getUsers();
+    const stats      = getStats();
     const totalCards = Object.values(stats).reduce((s, x) => s + (x.count || 0), 0);
     const activeUsers = users.filter(u => u.active !== false).length;
 
@@ -297,7 +255,10 @@ function mapAPIData(api) {
     if (!ok) throw new Error(api.message || "API error");
     const d = api.data;
     if (!d) throw new Error("No data in response");
-    const images = d.images || [];
+
+    // ✅ FIX #7: images array safely access করা
+    const images = Array.isArray(d.images) ? d.images : [];
+
     return {
         nationalId : d.nationalId  || d.nid          || "",
         nameBangla : d.nameBangla  || d.name_bn       || "",
@@ -308,17 +269,59 @@ function mapAPIData(api) {
         motherName : d.motherName  || d.mother_name   || "",
         bloodGroup : d.bloodGroup  || d.blood_group   || "",
         address    : d.address     || d.fulladdress   || "",
-        userIMG    : images[0]     || d.userIMG       || "",
-        signIMG    : images[1]     || d.signIMG       || "",
+        userIMG    : images[0]     || d.userIMG       || "", // ✅ safe fallback
+        signIMG    : images[1]     || d.signIMG       || "", // ✅ safe fallback
     };
 }
 
 // ============================================================
-//  GENERATE NID CARD → save HTML → return public URL
+//  HTML → PDF  (Puppeteer)
+// ============================================================
+async function htmlToPdfBuffer(html) {
+    // temp HTML ফাইল লিখি
+    const tmpHtml = path.join(CONFIG.TEMP_DIR, `nid_${crypto.randomBytes(8).toString("hex")}.html`);
+    fs.writeFileSync(tmpHtml, html, "utf8");
+
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        });
+
+        const page = await browser.newPage();
+
+        // file:// protocol দিয়ে local HTML লোড — সব image/font লোড হওয়া পর্যন্ত অপেক্ষা
+        await page.goto(`file://${tmpHtml}`, {
+            waitUntil: "networkidle0",
+            timeout  : 60000,
+        });
+
+        // NID card সাইজ অনুযায়ী PDF generate
+        const pdfBuf = await page.pdf({
+            width          : "856px",
+            height         : "540px",
+            printBackground: true,
+            margin         : { top: "0", right: "0", bottom: "0", left: "0" },
+        });
+
+        return Buffer.from(pdfBuf);
+
+    } finally {
+        if (browser) await browser.close().catch(() => {});
+        try { fs.unlinkSync(tmpHtml); } catch {}
+    }
+}
+
+// ============================================================
+//  GENERATE NID CARD HTML → return PDF buffer
 // ============================================================
 async function generateNIDCard(mappedData) {
-
-    const crypto = require("crypto");
 
     const params = new URLSearchParams({
         nid        : mappedData.nationalId,
@@ -337,57 +340,30 @@ async function generateNIDCard(mappedData) {
         issueDate  : new Date().toLocaleDateString("en-GB"),
     });
 
-    // Generate HTML
     const res = await axios.post(
         CONFIG.API_GENERATE_URL,
         params.toString(),
         {
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded"
-            },
-            timeout: 30000,
+            headers     : { "Content-Type": "application/x-www-form-urlencoded" },
+            timeout     : 30000,
             responseType: "text",
         }
     );
 
     const html = res.data;
+    if (!html || html.length < 100) throw new Error("Empty HTML from card generator");
 
-    if (!html || html.length < 100) {
-        throw new Error("Empty HTML from card generator");
-    }
-
-    // Random secure filename
-    const filename =
-        crypto.randomBytes(24).toString("hex") + ".html";
-
-    // Upload to hosting
-    const uploadRes = await axios.post(
-        CONFIG.UPLOAD_API_URL,
-        new URLSearchParams({
-            html,
-            filename
-        }).toString(),
-        {
-            headers: {
-                "Content-Type":
-                "application/x-www-form-urlencoded"
-            },
-            timeout: 30000
-        }
-    );
-
-    if (!uploadRes.data.success) {
-        throw new Error("Hosting upload failed");
-    }
-
-    return uploadRes.data.url;
+    // HTML → PDF buffer (Puppeteer দিয়ে)
+    const pdfBuffer = await htmlToPdfBuffer(html);
+    return pdfBuffer;
 }
+
 // ============================================================
 //  MAIN BOT
 // ============================================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
-    const { version } = await fetchLatestBaileysVersion();
+    const { version }          = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         auth: {
@@ -395,18 +371,18 @@ async function startBot() {
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
         },
         printQRInTerminal: false,
-        logger: pino({ level: "fatal" }),
-        browser: ["Chrome (Linux)", "Chrome", "121.0.0"],
+        logger           : pino({ level: "fatal" }),
+        browser          : ["Chrome (Linux)", "Chrome", "121.0.0"],
         version,
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: undefined,
+        connectTimeoutMs        : 60000,
+        defaultQueryTimeoutMs   : undefined,
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr)                    { lastQR = qr; isConnected = false; console.log("✅ QR Ready"); }
+        if (qr) { lastQR = qr; isConnected = false; console.log("✅ QR Ready"); }
         if (connection === "open") {
             lastQR = ""; isConnected = true;
             console.log("✅ WhatsApp Connected!");
@@ -427,10 +403,13 @@ async function startBot() {
         for (const m of messages) {
             if (!m.message || m.key.fromMe) continue;
 
-            const from    = m.key.remoteJid;
-            const number  = from.replace("@s.whatsapp.net", "").replace("@g.us", "");
+            const from   = m.key.remoteJid;
+            const number = from.replace("@s.whatsapp.net", "").replace("@g.us", "");
             const msgType = Object.keys(m.message)[0];
-            const text    = (m.message.conversation || m.message.extendedTextMessage?.text || "").trim();
+            const text   = (
+                m.message.conversation ||
+                m.message.extendedTextMessage?.text || ""
+            ).trim();
 
             // .ping
             if (text === ".ping") {
@@ -470,30 +449,32 @@ async function startBot() {
                 }, { quoted: m });
 
                 console.log(`📥 PDF from ${number}`);
-                const pdfBuffer  = await downloadMediaMessage(m, "buffer", {});
-                console.log(`✅ PDF size: ${pdfBuffer.length} bytes`);
+                const inputPdf = await downloadMediaMessage(m, "buffer", {});
+                console.log(`✅ PDF size: ${inputPdf.length} bytes`);
 
-                const apiRes     = await extractNIDFromPDF(pdfBuffer);
-                const mapped     = mapAPIData(apiRes);
+                const apiRes  = await extractNIDFromPDF(inputPdf);
+                const mapped  = mapAPIData(apiRes);
                 console.log(`✅ Extracted: ${mapped.nameBangla} | ${mapped.nationalId}`);
 
-                const cardLink   = await generateNIDCard(mapped);
-                console.log(`✅ Card: ${cardLink}`);
+                const cardPdf = await generateNIDCard(mapped);
+                console.log(`✅ PDF generated: ${cardPdf.length} bytes`);
 
-                // Stats record
                 recordStat(number, mapped.nameBangla || mapped.nameEnglish);
 
-                const name = mapped.nameBangla || mapped.nameEnglish || "অজানা";
-                const nid  = mapped.nationalId || "N/A";
+                const name    = mapped.nameBangla || mapped.nameEnglish || "অজানা";
+                const nid     = mapped.nationalId || "N/A";
+                const pdfName = `NID_${nid}_${Date.now()}.pdf`;
 
+                // PDF ফাইল হিসেবে document send করো
                 await sock.sendMessage(from, {
-                    text:
+                    document : cardPdf,
+                    mimetype : "application/pdf",
+                    fileName : pdfName,
+                    caption  :
                         `✅ *NID কার্ড প্রস্তুত!*\n\n` +
                         `👤 নাম: ${name}\n` +
                         `🪪 NID: ${nid}\n\n` +
-                        `🔗 কার্ড দেখতে লিংকে ক্লিক করুন:\n${cardLink}\n\n` +
-                        `📌 লিংক খুললে Print dialog আসবে।\n` +
-                        `*Save as PDF* বা Print করুন।`,
+                        `📄 PDF টি সরাসরি Download করুন এবং Print করুন।`,
                 }, { quoted: m });
 
             } catch (err) {
@@ -622,14 +603,12 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
     <button class="btn-out" type="submit">Logout</button></form>
 </div>
 <div class="wrap">
-  <!-- Stats -->
   <div class="stats">
     <div class="sc"><div class="sc-label">মোট Users</div><div class="sc-val blue">${users.length}</div></div>
     <div class="sc"><div class="sc-label">Active</div><div class="sc-val green">${activeUsers}</div></div>
     <div class="sc"><div class="sc-label">মোট Cards</div><div class="sc-val green">${totalCards}</div></div>
   </div>
 
-  <!-- Add User -->
   <div class="card">
     <div class="card-head">➕ নতুন Number যোগ করুন</div>
     <form method="POST" class="add-form">
@@ -640,14 +619,12 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
     </form>
   </div>
 
-  <!-- User List -->
   <div class="card">
     <div class="card-head">📋 অনুমোদিত Numbers</div>
     <table><thead><tr><th>Number</th><th>নাম</th><th>Status</th><th>যোগের তারিখ</th><th>Action</th></tr></thead>
     <tbody>${userRows}</tbody></table>
   </div>
 
-  <!-- Usage Stats -->
   <div class="card">
     <div class="card-head">📊 Card Generation Statistics</div>
     <table><thead><tr><th>Number</th><th>নাম</th><th>Cards</th><th>শেষ ব্যবহার</th></tr></thead>
@@ -660,8 +637,22 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 //  UTILS
 // ============================================================
 function parseCookies(str) {
-    return Object.fromEntries(str.split(";").map(c => c.trim().split("=").map(decodeURIComponent)));
+    // ✅ FIX #8: malformed cookie crash fix — try-catch + filter empty
+    if (!str) return {};
+    return Object.fromEntries(
+        str.split(";")
+           .map(c => c.trim())
+           .filter(c => c.includes("="))           // ✅ "=" ছাড়া entry skip
+           .map(c => {
+               const idx = c.indexOf("=");         // ✅ শুধু প্রথম "=" এ split
+               return [
+                   decodeURIComponent(c.slice(0, idx).trim()),
+                   decodeURIComponent(c.slice(idx + 1).trim()),
+               ];
+           })
+    );
 }
+
 function readBody(req) {
     return new Promise((resolve) => {
         let body = "";
