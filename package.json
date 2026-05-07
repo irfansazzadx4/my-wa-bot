@@ -1,7 +1,17 @@
 {
+  "name": "my-wa-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Bot on Render",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.17.16",
-    "pino": "^10.3.1",
-    "qrcode-terminal": "^0.12.0"
-  }
+    "@whiskeysockets/baileys": "^6.6.0",
+    "@hapi/boom": "^10.0.1",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^8.19.0"
+  },
+  "author": "Irfan",
+  "license": "ISC"
 }
