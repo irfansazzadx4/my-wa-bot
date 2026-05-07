@@ -20,7 +20,40 @@ const API_EXTRACT_URL = "https://auto.onlinebd.top/Signtonid_api_one.php";
 const API_GENERATE_URL = "https://auto.onlinebd.top/bot/nid-bn.php";
 const BASE_URL = "https://auto.onlinebd.top/bot/storage/";
 
-// ====== SERVER ======
+// ====== ADMIN & DATABASE ======
+const ADMIN_NUMBER = "8801846649326@s.whatsapp.net"; // আপনার নম্বর
+const DATABASE_FILE = "./authorized_numbers.json";
+
+// ডাটাবেস ফাইল চেক ও নতুন ফরমেটে তৈরি
+if (!fs.existsSync(DATABASE_FILE)) {
+    const initialData = {};
+    initialData[ADMIN_NUMBER] = 0; // অ্যাডমিনের কাউন্ট ০
+    fs.writeFileSync(DATABASE_FILE, JSON.stringify(initialData));
+}
+
+// ডাটাবেস ফাংশনসমূহ
+function getDB() {
+    return JSON.parse(fs.readFileSync(DATABASE_FILE));
+}
+
+function saveDB(data) {
+    fs.writeFileSync(DATABASE_FILE, JSON.stringify(data, null, 2));
+}
+
+function isAuthorized(number) {
+    const data = getDB();
+    return data.hasOwnProperty(number);
+}
+
+function updateUsage(number) {
+    let data = getDB();
+    if (data[number] !== undefined) {
+        data[number] += 1;
+        saveDB(data);
+    }
+}
+
+// ====== SERVER (QR DISPLAY) ======
 const PORT = process.env.PORT || 3000;
 let lastQR = "";
 let isConnected = false;
@@ -37,124 +70,51 @@ http.createServer(async (req, res) => {
             res.end(`<html><body style="text-align:center;background:#111;color:#fff;font-family:sans-serif">
                 <h2>📱 WhatsApp QR Code</h2>
                 <img src="${qrImage}" style="width:280px;border:4px solid #25D366;border-radius:12px"/>
-                <p>WhatsApp → Linked Devices → Link a Device → QR Scan করুন</p>
-                <meta http-equiv="refresh" content="30">
+                <p>Scan to connect</p><meta http-equiv="refresh" content="30">
             </body></html>`);
         } catch (e) { res.writeHead(500); res.end("QR error"); }
     } else {
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(`<html><body style="text-align:center;background:#111;color:#fff;font-family:sans-serif">
-            <h2>⏳ QR লোড হচ্ছে...</h2>
-            <meta http-equiv="refresh" content="10">
-        </body></html>`);
+            <h2>⏳ Loading QR...</h2><meta http-equiv="refresh" content="10"></body></html>`);
     }
-}).listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+}).listen(PORT);
 
-// ====== GITHUB SESSION SAVE ======
-async function pushSessionToGitHub() {
+// ====== GITHUB SYNC ======
+async function pushToGitHub() {
     try {
         const repo = process.env.GITHUB_REPO;
         const token = process.env.GITHUB_TOKEN;
         const branch = process.env.GITHUB_BRANCH || "main";
         if (!repo || !token) return;
+        
         execSync(`git config --global user.email "bot@bot.com"`);
         execSync(`git config --global user.name "WA Bot"`);
         const remoteUrl = `https://${token}@github.com/${repo}.git`;
-        try {
-            execSync(`git remote get-url origin`);
-            execSync(`git remote set-url origin ${remoteUrl}`);
-        } catch {
-            execSync(`git remote add origin ${remoteUrl}`);
-        }
-        execSync(`git add -f auth_info_baileys/`);
-        execSync(`git commit -m "session update" --allow-empty`);
+        
+        try { execSync(`git remote set-url origin ${remoteUrl}`); } 
+        catch { execSync(`git remote add origin ${remoteUrl}`); }
+        
+        execSync(`git add -f auth_info_baileys/ authorized_numbers.json`);
+        execSync(`git commit -m "update data" --allow-empty`);
         execSync(`git push origin ${branch} --force`);
-        console.log("✅ Session GitHub এ save হয়েছে!");
-    } catch (e) {
-        console.log("⚠️ Session push error:", e.message);
-    }
+        console.log("✅ GitHub-এ ব্যাকআপ নেওয়া হয়েছে।");
+    } catch (e) { console.log("⚠️ Sync error:", e.message); }
 }
 
-// ====== NID DATA EXTRACT ======
-async function extractNIDFromPDF(pdfBuffer) {
-    const form = new FormData();
-    form.append("pdf", pdfBuffer, {
-        filename: "nid.pdf",
-        contentType: "application/pdf",
-    });
-
-    const response = await axios.post(API_EXTRACT_URL, form, {
-        headers: form.getHeaders(),
-        timeout: 60000,
-    });
-
-    console.log("📦 API Raw Response:", JSON.stringify(response.data).substring(0, 500));
-    return response.data;
-}
-
-// ====== API RESPONSE থেকে DATA MAP করা ======
-// API response এ data structure এরকম:
-// { success: true, data: { nationalId, nameBangla, nameEnglish, dateOfBirth, ... images: [...] } }
-function mapAPIData(apiResponse) {
-    if (!apiResponse) throw new Error("Empty API response");
-
-    // status: 'success' অথবা success: true — দুটোই handle করা হচ্ছে
-    const isSuccess = apiResponse.status === "success" || apiResponse.success === true;
-    if (!isSuccess) {
-        throw new Error(apiResponse.message || "API returned error");
-    }
-
-    const d = apiResponse.data;
-    if (!d) throw new Error("No data in API response");
-
-    // images array থেকে photo ও signature নেওয়া
-    const images = d.images || [];
-    const userIMG = images[0] || d.userIMG || d.photo || "";
-    const signIMG = images[1] || d.signIMG || d.signature || "";
-
-    return {
-        nationalId:  d.nationalId  || d.nid       || d.national_id || "",
-        nameBangla:  d.nameBangla  || d.name_bn    || d.bangla_name || "",
-        nameEnglish: d.nameEnglish || d.name_en    || d.english_name|| "",
-        dateOfBirth: d.dateOfBirth || d.dob        || d.date_of_birth || "",
-        birthPlace:  d.birthPlace  || d.birth_place|| "",
-        fatherName:  d.fatherName  || d.father_name|| d.father      || "",
-        motherName:  d.motherName  || d.mother_name|| d.mother      || "",
-        bloodGroup:  d.bloodGroup  || d.blood_group|| d.blood       || "",
-        address:     d.address     || d.fulladdress|| d.present_address || "",
-        userIMG,
-        signIMG,
-    };
-}
-
-// ====== NID CARD GENERATE ======
+// ====== NID HELPER FUNCTIONS ======
 async function generateNIDCard(mappedData) {
     const params = new URLSearchParams();
-    params.append("nid",         mappedData.nationalId);
-    params.append("pin",         "");
-    params.append("pin_status",  "disabled");
-    params.append("nameBangla",  mappedData.nameBangla);
-    params.append("nameEnglish", mappedData.nameEnglish);
-    params.append("dob",         mappedData.dateOfBirth);
-    params.append("birthPlace",  mappedData.birthPlace);
-    params.append("nameFather",  mappedData.fatherName);
-    params.append("nameMother",  mappedData.motherName);
-    params.append("bloodGroup",  mappedData.bloodGroup);
-    params.append("fulladdress", mappedData.address);
-    params.append("imageUrl12",  mappedData.userIMG);
-    params.append("imageUrl22",  mappedData.signIMG);
-    params.append("issueDate",   new Date().toLocaleDateString("en-GB"));
+    Object.keys(mappedData).forEach(key => params.append(key, mappedData[key]));
+    params.append("issueDate", new Date().toLocaleDateString("en-GB"));
 
     const response = await axios.post(API_GENERATE_URL, params.toString(), {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        timeout: 30000,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }
     });
 
-    if (!response.data || response.data.length < 100) {
-        throw new Error("Empty HTML response from card generator");
-    }
-
-    return BASE_URL + "?id=" + Date.now(); // server এ save হবে
+    const match = response.data.match(/id=([0-9]+)/);
+    const fileId = match ? match[1] : Date.now();
+    return `${BASE_URL}?id=${fileId}`;
 }
 
 // ====== MAIN BOT ======
@@ -169,110 +129,119 @@ async function startBot() {
         },
         printQRInTerminal: false,
         logger: pino({ level: "fatal" }),
-        browser: ["Chrome (Linux)", "Chrome", "121.0.0"],
+        browser: ["Ubuntu", "Chrome", "121.0.0"],
         version,
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: undefined,
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr) { lastQR = qr; isConnected = false; console.log("✅ QR Ready!"); }
+        if (qr) { lastQR = qr; isConnected = false; }
         if (connection === "open") {
             lastQR = ""; isConnected = true;
-            console.log("✅ WhatsApp Bot Connected!");
-            await pushSessionToGitHub();
+            console.log("✅ Connected!");
+            await pushToGitHub();
         }
         if (connection === "close") {
-            isConnected = false;
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            console.log("❌ Connection closed. Code:", reason);
             if (reason !== DisconnectReason.loggedOut) startBot();
         }
     });
 
-    // ====== MESSAGE HANDLER ======
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
         if (type !== "notify") return;
-
         for (const m of messages) {
             if (!m.message || m.key.fromMe) continue;
 
             const from = m.key.remoteJid;
-            const msgType = Object.keys(m.message)[0];
-            const textMsg = m.message.conversation || m.message.extendedTextMessage?.text || "";
+            const textMsg = (m.message.conversation || m.message.extendedTextMessage?.text || "").trim();
+            const args = textMsg.split(" ");
+            const command = args[0].toLowerCase();
 
-            // .ping কমান্ড
-            if (textMsg.trim() === ".ping") {
-                await sock.sendMessage(from, { text: "Pong! 🏓 বট সচল আছে।" });
-                continue;
-            }
-
-            // PDF handle
-            if (msgType === "documentMessage") {
-                const mimetype = m.message.documentMessage?.mimetype || "";
-
-                if (!mimetype.includes("pdf")) {
-                    await sock.sendMessage(from, {
-                        text: "❌ শুধুমাত্র PDF ফাইল পাঠান।",
-                    }, { quoted: m });
+            // --- ১. অ্যাডমিন কমান্ডস ---
+            if (from === ADMIN_NUMBER) {
+                if (command === ".add") {
+                    const target = args[1]?.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+                    let data = getDB();
+                    if (!data[target]) {
+                        data[target] = 0;
+                        saveDB(data);
+                        await sock.sendMessage(from, { text: `✅ ${args[1]} অনুমোদিত হয়েছে।` });
+                        await pushToGitHub();
+                    }
                     continue;
                 }
+                if (command === ".remove") {
+                    const target = args[1]?.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+                    let data = getDB();
+                    delete data[target];
+                    saveDB(data);
+                    await sock.sendMessage(from, { text: `❌ ${args[1]} রিমুভ করা হয়েছে।` });
+                    await pushToGitHub();
+                    continue;
+                }
+                if (command === ".list") {
+                    const data = getDB();
+                    let listMsg = "📑 *অনুমোদিত ইউজার লিস্ট:*\n\n";
+                    Object.keys(data).forEach((num, i) => {
+                        listMsg += `${i+1}. 📱 ${num.split('@')[0]}\n   💳 তৈরি করেছে: ${data[num]} টি\n\n`;
+                    });
+                    await sock.sendMessage(from, { text: listMsg });
+                    continue;
+                }
+            }
 
+            // --- ২. অ্যাক্সেস কন্ট্রোল ---
+            if (!isAuthorized(from)) continue;
+
+            // --- ৩. PDF প্রসেসিং ---
+            if (m.message.documentMessage) {
                 try {
-                    await sock.sendMessage(from, {
-                        text: "⏳ আপনার NID প্রক্রিয়া করা হচ্ছে...\nঅনুগ্রহ করে একটু অপেক্ষা করুন।",
-                    }, { quoted: m });
+                    const mimetype = m.message.documentMessage.mimetype;
+                    if (!mimetype.includes("pdf")) continue;
 
-                    // PDF download
-                    console.log("📥 PDF downloading...");
+                    await sock.sendMessage(from, { text: "⏳ প্রসেস শুরু হচ্ছে..." });
                     const pdfBuffer = await downloadMediaMessage(m, "buffer", {});
-                    console.log("✅ PDF size:", pdfBuffer.length, "bytes");
-
+                    
                     // Extract
-                    console.log("🔍 Extracting...");
-                    const apiResponse = await extractNIDFromPDF(pdfBuffer);
+                    const form = new FormData();
+                    form.append("pdf", pdfBuffer, { filename: "nid.pdf", contentType: "application/pdf" });
+                    const apiResponse = await axios.post(API_EXTRACT_URL, form, { headers: form.getHeaders(), timeout: 60000 });
+                    
+                    if (!apiResponse.data || (apiResponse.data.status !== "success" && !apiResponse.data.success)) {
+                        throw new Error("API থেকে ডাটা পাওয়া যায়নি।");
+                    }
 
-                    // Map data
-                    const mappedData = mapAPIData(apiResponse);
-                    console.log("✅ Mapped:", mappedData.nameBangla, mappedData.nationalId);
+                    const d = apiResponse.data.data;
+                    const images = d.images || [];
+                    const mapped = {
+                        nationalId: d.nationalId || d.nid || "",
+                        nameBangla: d.nameBangla || d.name_bn || "",
+                        nameEnglish: d.nameEnglish || d.name_en || "",
+                        dateOfBirth: d.dateOfBirth || d.dob || "",
+                        birthPlace: d.birthPlace || "",
+                        fatherName: d.fatherName || d.father || "",
+                        motherName: d.motherName || d.mother || "",
+                        bloodGroup: d.bloodGroup || "",
+                        address: d.address || d.fulladdress || "",
+                        userIMG: images[0] || "",
+                        signIMG: images[1] || "",
+                    };
 
-                    // Generate card
-                    console.log("🎨 Generating card...");
-                    const cardLink = await generateNIDCard(mappedData);
-
-                    // Reply
-                    const name = mappedData.nameBangla || mappedData.nameEnglish || "অজানা";
-                    const nid  = mappedData.nationalId || "N/A";
+                    const cardLink = await generateNIDCard(mapped);
+                    updateUsage(from); // কাউন্টার বাড়ানো
 
                     await sock.sendMessage(from, {
-                        text:
-                            `✅ *NID কার্ড প্রস্তুত!*\n\n` +
-                            `👤 নাম: ${name}\n` +
-                            `🪪 NID: ${nid}\n\n` +
-                            `🔗 কার্ড দেখতে লিংকে ক্লিক করুন:\n${cardLink}\n\n` +
-                            `📌 লিংক খুললে Print dialog আসবে।\n` +
-                            `*Save as PDF* বা Print করুন।`,
+                        text: `✅ *NID কার্ড প্রস্তুত!*\n👤 নাম: ${mapped.nameBangla}\n🪪 NID: ${mapped.nationalId}\n🔗 লিংক: ${cardLink}`
                     }, { quoted: m });
 
                 } catch (err) {
-                    console.error("❌ Error:", err.message);
-                    // Debug: full error log
-                    console.error("Full error:", err);
-                    await sock.sendMessage(from, {
-                        text: `⚠️ সমস্যা হয়েছে:\n${err.message}\n\nআবার চেষ্টা করুন।`,
-                    }, { quoted: m });
+                    await sock.sendMessage(from, { text: `⚠️ এরর: ${err.message}` });
                 }
-
-            } else if (msgType !== "conversation" && msgType !== "extendedTextMessage") {
-                await sock.sendMessage(from, {
-                    text: "📄 অনুগ্রহ করে আপনার NID-এর *PDF ফাইলটি* পাঠান।",
-                }, { quoted: m });
             }
         }
     });
 }
 
-startBot().catch(err => console.error("Critical Error:", err));
+startBot().catch(err => console.error(err));
