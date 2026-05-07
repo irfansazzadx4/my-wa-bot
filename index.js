@@ -296,7 +296,9 @@ async function htmlToPdfBuffer(html) {
 
     let browser;
     try {
-        browser = await puppeteer.launch({
+        // Railway: PUPPETEER_EXECUTABLE_PATH=/run/current-system/sw/bin/chromium
+        // Render:  puppeteer নিজের Chrome ব্যবহার করে (executablePath দেওয়া লাগে না)
+        const launchOptions = {
             headless: "new",
             args: [
                 "--no-sandbox",
@@ -308,7 +310,11 @@ async function htmlToPdfBuffer(html) {
                 "--no-zygote",
                 "--single-process",
             ],
-        });
+        };
+        if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+            launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        }
+        browser = await puppeteer.launch(launchOptions);
 
         const page = await browser.newPage();
 
