@@ -3,20 +3,24 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    makeCacheableSignalKeyStore
+    makeCacheableSignalKeyStore,
+    delay
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const http = require("http");
 
-// Render Port Binding Fix
+// ১. Render Port Binding Fix (যাতে সার্ভার বন্ধ না হয়)
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is running properly...\n');
-}).listen(PORT);
+    res.end('WhatsApp Bot is running properly...\n');
+}).listen(PORT, () => {
+    console.log(`✅ Fake server running on port ${PORT}`);
+});
 
 async function startBot() {
+    // সেশন সেভ করার জন্য ফোল্ডার (GitHub এ এই ফোল্ডারটি পুশ করবেন না)
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     const { version } = await fetchLatestBaileysVersion();
 
@@ -28,45 +32,64 @@ async function startBot() {
         printQRInTerminal: false, // QR কোড ভেঙে যায় তাই এটি বন্ধ রাখা হয়েছে
         logger: pino({ level: "fatal" }),
         browser: ["Ubuntu", "Chrome", "121.0.6167.184"],
-        version
+        version,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: undefined,
     });
 
-    // পেয়ারিং কোড সিস্টেম
+    // ২. শক্তিশালী পেয়ারিং কোড লজিক
     if (!sock.authState.creds.registered) {
-        const phoneNumber = "8801846649326"; 
+        console.log("⏳ পেয়ারিং কোড তৈরির চেষ্টা করা হচ্ছে... ১৫ সেকেন্ড অপেক্ষা করুন।");
+        
         setTimeout(async () => {
             try {
+                const phoneNumber = "8801846649326"; // আপনার নম্বর
                 let code = await sock.requestPairingCode(phoneNumber);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
+                
                 console.log("\n=======================================");
-                console.log(`📱 YOUR PAIRING CODE: ${code}`);
+                console.log(`📱 আপনার পেয়ারিং কোড: ${code}`);
                 console.log("=======================================\n");
             } catch (error) {
-                console.error("Pairing Code Error:", error);
+                console.error("❌ পেয়ারিং কোড এরর:", error.message);
+                console.log("পরামর্শ: Render থেকে 'Clear Build Cache & Deploy' দিন।");
             }
-        }, 8000); 
+        }, 15000); // সকেট স্ট্যাবল হওয়ার জন্য ১৫ সেকেন্ড সময় দেওয়া হলো
     }
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
+
         if (connection === "close") {
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            if (reason !== DisconnectReason.loggedOut) startBot();
+            console.log("❌ কানেকশন বন্ধ হয়েছে। কারণ কোড:", reason);
+            
+            if (reason !== DisconnectReason.loggedOut) {
+                console.log("🔄 পুনরায় কানেক্ট করার চেষ্টা করা হচ্ছে...");
+                startBot();
+            } else {
+                console.log("🚫 লগ আউট হয়েছে। অনুগ্রহ করে নতুন করে পেয়ারিং কোড নিন।");
+            }
         } else if (connection === "open") {
-            console.log("✅ Bot Connected Successfully!");
+            console.log("✅ হোয়াটসঅ্যাপ বট সফলভাবে কানেক্ট হয়েছে!");
         }
     });
 
+    // ৩. মেসেজ হ্যান্ডেলিং (টেস্ট কমান্ড: .ping)
     sock.ev.on("messages.upsert", async ({ messages }) => {
         const m = messages[0];
         if (!m.message || m.key.fromMe) return;
+
         const msgText = m.message.conversation || m.message.extendedTextMessage?.text;
+        const remoteJid = m.key.remoteJid;
+
         if (msgText === ".ping") {
-            await sock.sendMessage(m.key.remoteJid, { text: "Pong! 🏓" });
+            await sock.sendMessage(remoteJid, { text: "Pong! 🏓 বট সচল আছে।" });
         }
     });
 }
 
-startBot().catch(err => console.error("Error:", err));
+// প্রসেস শুরু করুন
+startBot().catch(err => console.error("Critical Error:", err));
