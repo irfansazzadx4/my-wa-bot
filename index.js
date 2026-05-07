@@ -13,20 +13,17 @@ const qrcode = require("qrcode");
 const { execSync } = require("child_process");
 const FormData = require("form-data");
 const axios = require("axios");
+const fs = require("fs");
 
 // ====== CONFIG ======
 const API_EXTRACT_URL = "https://server24.kesug.com/Signtonid_api_one.php";
 const API_GENERATE_URL = "https://server24.kesug.com/bot/nid-bn.php";
 const BASE_URL = "https://server24.kesug.com/bot/storage/";
-const STORAGE_DIR = "/tmp/nid_storage/";
 
 // ====== SERVER ======
 const PORT = process.env.PORT || 3000;
 let lastQR = "";
 let isConnected = false;
-
-const fs = require("fs");
-if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
 http.createServer(async (req, res) => {
     if (isConnected) {
@@ -60,7 +57,6 @@ async function pushSessionToGitHub() {
         const token = process.env.GITHUB_TOKEN;
         const branch = process.env.GITHUB_BRANCH || "main";
         if (!repo || !token) return;
-
         execSync(`git config --global user.email "bot@bot.com"`);
         execSync(`git config --global user.name "WA Bot"`);
         const remoteUrl = `https://${token}@github.com/${repo}.git`;
@@ -79,7 +75,7 @@ async function pushSessionToGitHub() {
     }
 }
 
-// ====== NID PROCESSING ======
+// ====== NID DATA EXTRACT ======
 async function extractNIDFromPDF(pdfBuffer) {
     const form = new FormData();
     form.append("pdf", pdfBuffer, {
@@ -92,25 +88,62 @@ async function extractNIDFromPDF(pdfBuffer) {
         timeout: 60000,
     });
 
+    console.log("📦 API Raw Response:", JSON.stringify(response.data).substring(0, 500));
     return response.data;
 }
 
-async function generateNIDCard(data) {
+// ====== API RESPONSE থেকে DATA MAP করা ======
+// API response এ data structure এরকম:
+// { success: true, data: { nationalId, nameBangla, nameEnglish, dateOfBirth, ... images: [...] } }
+function mapAPIData(apiResponse) {
+    if (!apiResponse) throw new Error("Empty API response");
+
+    // status: 'success' অথবা success: true — দুটোই handle করা হচ্ছে
+    const isSuccess = apiResponse.status === "success" || apiResponse.success === true;
+    if (!isSuccess) {
+        throw new Error(apiResponse.message || "API returned error");
+    }
+
+    const d = apiResponse.data;
+    if (!d) throw new Error("No data in API response");
+
+    // images array থেকে photo ও signature নেওয়া
+    const images = d.images || [];
+    const userIMG = images[0] || d.userIMG || d.photo || "";
+    const signIMG = images[1] || d.signIMG || d.signature || "";
+
+    return {
+        nationalId:  d.nationalId  || d.nid       || d.national_id || "",
+        nameBangla:  d.nameBangla  || d.name_bn    || d.bangla_name || "",
+        nameEnglish: d.nameEnglish || d.name_en    || d.english_name|| "",
+        dateOfBirth: d.dateOfBirth || d.dob        || d.date_of_birth || "",
+        birthPlace:  d.birthPlace  || d.birth_place|| "",
+        fatherName:  d.fatherName  || d.father_name|| d.father      || "",
+        motherName:  d.motherName  || d.mother_name|| d.mother      || "",
+        bloodGroup:  d.bloodGroup  || d.blood_group|| d.blood       || "",
+        address:     d.address     || d.fulladdress|| d.present_address || "",
+        userIMG,
+        signIMG,
+    };
+}
+
+// ====== NID CARD GENERATE ======
+async function generateNIDCard(mappedData) {
     const params = new URLSearchParams();
-    params.append("nid", data.nationalId || "");
-    params.append("pin", "");
-    params.append("pin_status", "disabled");
-    params.append("nameBangla", data.nameBangla || "");
-    params.append("nameEnglish", data.nameEnglish || "");
-    params.append("dob", data.dateOfBirth || "");
-    params.append("birthPlace", data.birthPlace || "");
-    params.append("nameFather", data.fatherName || "");
-    params.append("nameMother", data.motherName || "");
-    params.append("bloodGroup", data.bloodGroup || "");
-    params.append("fulladdress", data.address || "");
-    params.append("imageUrl12", data.userIMG || "");
-    params.append("imageUrl22", data.signIMG || "");
-    params.append("issueDate", new Date().toLocaleDateString("en-GB"));
+    params.append("nid",         mappedData.nationalId);
+    params.append("pin",         "");
+    params.append("pin_status",  "disabled");
+    params.append("nameBangla",  mappedData.nameBangla);
+    params.append("nameEnglish", mappedData.nameEnglish);
+    params.append("dob",         mappedData.dateOfBirth);
+    params.append("birthPlace",  mappedData.birthPlace);
+    params.append("nameFather",  mappedData.fatherName);
+    params.append("nameMother",  mappedData.motherName);
+    params.append("bloodGroup",  mappedData.bloodGroup);
+    params.append("fulladdress", mappedData.address);
+    params.append("imageUrl12",  mappedData.userIMG);
+    params.append("imageUrl22",  mappedData.signIMG);
+    params.append("issueDate",   new Date().toLocaleDateString("en-GB"));
 
     const response = await axios.post(API_GENERATE_URL, params.toString(), {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -121,12 +154,7 @@ async function generateNIDCard(data) {
         throw new Error("Empty HTML response from card generator");
     }
 
-    // HTML file save করো server এ
-    const filename = Date.now() + "_card.html";
-    const filepath = STORAGE_DIR + filename;
-    fs.writeFileSync(filepath, response.data);
-
-    return BASE_URL + filename;
+    return BASE_URL + "?id=" + Date.now(); // server এ save হবে
 }
 
 // ====== MAIN BOT ======
@@ -151,27 +179,17 @@ async function startBot() {
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            lastQR = qr;
-            isConnected = false;
-            console.log("✅ QR Ready!");
-        }
-
+        if (qr) { lastQR = qr; isConnected = false; console.log("✅ QR Ready!"); }
         if (connection === "open") {
-            lastQR = "";
-            isConnected = true;
+            lastQR = ""; isConnected = true;
             console.log("✅ WhatsApp Bot Connected!");
             await pushSessionToGitHub();
         }
-
         if (connection === "close") {
             isConnected = false;
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log("❌ Connection closed. Code:", reason);
-            if (reason !== DisconnectReason.loggedOut) {
-                startBot();
-            }
+            if (reason !== DisconnectReason.loggedOut) startBot();
         }
     });
 
@@ -184,79 +202,71 @@ async function startBot() {
 
             const from = m.key.remoteJid;
             const msgType = Object.keys(m.message)[0];
+            const textMsg = m.message.conversation || m.message.extendedTextMessage?.text || "";
 
             // .ping কমান্ড
-            const textMsg = m.message.conversation || m.message.extendedTextMessage?.text || "";
             if (textMsg.trim() === ".ping") {
                 await sock.sendMessage(from, { text: "Pong! 🏓 বট সচল আছে।" });
                 continue;
             }
 
-            // PDF document handle
+            // PDF handle
             if (msgType === "documentMessage") {
-                const doc = m.message.documentMessage;
-                const mimetype = doc.mimetype || "";
+                const mimetype = m.message.documentMessage?.mimetype || "";
 
                 if (!mimetype.includes("pdf")) {
                     await sock.sendMessage(from, {
-                        text: "❌ শুধুমাত্র PDF ফাইল পাঠান।\n\nআপনার NID-এর PDF ফাইলটি পাঠান।",
+                        text: "❌ শুধুমাত্র PDF ফাইল পাঠান।",
                     }, { quoted: m });
                     continue;
                 }
 
                 try {
-                    // Processing message পাঠাও
                     await sock.sendMessage(from, {
                         text: "⏳ আপনার NID প্রক্রিয়া করা হচ্ছে...\nঅনুগ্রহ করে একটু অপেক্ষা করুন।",
                     }, { quoted: m });
 
-                    // PDF download করো
+                    // PDF download
                     console.log("📥 PDF downloading...");
                     const pdfBuffer = await downloadMediaMessage(m, "buffer", {});
-                    console.log("✅ PDF downloaded, size:", pdfBuffer.length);
+                    console.log("✅ PDF size:", pdfBuffer.length, "bytes");
 
-                    // Extract data
-                    console.log("🔍 Extracting NID data...");
-                    const extractResult = await extractNIDFromPDF(pdfBuffer);
+                    // Extract
+                    console.log("🔍 Extracting...");
+                    const apiResponse = await extractNIDFromPDF(pdfBuffer);
 
-                    if (extractResult.status !== "success" || !extractResult.data) {
-                        await sock.sendMessage(from, {
-                            text: "❌ PDF থেকে তথ্য পড়া সম্ভব হয়নি।\n\nনিশ্চিত করুন যে এটি বাংলাদেশ NID-এর অরিজিনাল PDF।",
-                        }, { quoted: m });
-                        continue;
-                    }
+                    // Map data
+                    const mappedData = mapAPIData(apiResponse);
+                    console.log("✅ Mapped:", mappedData.nameBangla, mappedData.nationalId);
 
-                    const d = extractResult.data;
-                    console.log("✅ Data extracted:", d.nameBangla || d.nameEnglish);
+                    // Generate card
+                    console.log("🎨 Generating card...");
+                    const cardLink = await generateNIDCard(mappedData);
 
-                    // Card generate করো
-                    console.log("🎨 Generating NID card...");
-                    const cardLink = await generateNIDCard(d);
-                    console.log("✅ Card generated:", cardLink);
-
-                    // User কে link পাঠাও
-                    const name = d.nameBangla || d.nameEnglish || "অজানা";
-                    const nid = d.nationalId || "N/A";
+                    // Reply
+                    const name = mappedData.nameBangla || mappedData.nameEnglish || "অজানা";
+                    const nid  = mappedData.nationalId || "N/A";
 
                     await sock.sendMessage(from, {
                         text:
                             `✅ *NID কার্ড প্রস্তুত!*\n\n` +
                             `👤 নাম: ${name}\n` +
                             `🪪 NID: ${nid}\n\n` +
-                            `🔗 কার্ড দেখতে নিচের লিংকে ক্লিক করুন:\n${cardLink}\n\n` +
-                            `📌 লিংক খুললে কার্ড দেখাবে এবং স্বয়ংক্রিয়ভাবে Print dialog আসবে।\n` +
-                            `সেখান থেকে *Save as PDF* বা Print করুন।`,
+                            `🔗 কার্ড দেখতে লিংকে ক্লিক করুন:\n${cardLink}\n\n` +
+                            `📌 লিংক খুললে Print dialog আসবে।\n` +
+                            `*Save as PDF* বা Print করুন।`,
                     }, { quoted: m });
 
                 } catch (err) {
-                    console.error("❌ NID processing error:", err.message);
+                    console.error("❌ Error:", err.message);
+                    // Debug: full error log
+                    console.error("Full error:", err);
                     await sock.sendMessage(from, {
                         text: `⚠️ সমস্যা হয়েছে:\n${err.message}\n\nআবার চেষ্টা করুন।`,
                     }, { quoted: m });
                 }
 
             } else if (msgType !== "conversation" && msgType !== "extendedTextMessage") {
-                // PDF ছাড়া অন্য file পাঠালে
                 await sock.sendMessage(from, {
                     text: "📄 অনুগ্রহ করে আপনার NID-এর *PDF ফাইলটি* পাঠান।",
                 }, { quoted: m });
