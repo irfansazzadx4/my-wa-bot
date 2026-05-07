@@ -21,18 +21,17 @@ const API_GENERATE_URL = "https://auto.onlinebd.top/bot/nid-bn.php";
 const BASE_URL = "https://auto.onlinebd.top/bot/storage/";
 
 // ====== ADMIN & DATABASE ======
-const ADMIN_NUMBER = "8801846649326@s.whatsapp.net"; // আপনার নম্বর
+const ADMIN_NUMBER = "8801846649326@s.whatsapp.net"; 
 const DATABASE_FILE = "./authorized_numbers.json";
-
-// ডাটাবেস ফাইল চেক ও নতুন ফরমেটে তৈরি
-if (!fs.existsSync(DATABASE_FILE)) {
-    const initialData = {};
-    initialData[ADMIN_NUMBER] = 0; // অ্যাডমিনের কাউন্ট ০
-    fs.writeFileSync(DATABASE_FILE, JSON.stringify(initialData));
-}
 
 // ডাটাবেস ফাংশনসমূহ
 function getDB() {
+    if (!fs.existsSync(DATABASE_FILE)) {
+        const initialData = {};
+        initialData[ADMIN_NUMBER] = 0;
+        fs.writeFileSync(DATABASE_FILE, JSON.stringify(initialData, null, 2));
+        return initialData;
+    }
     return JSON.parse(fs.readFileSync(DATABASE_FILE));
 }
 
@@ -42,6 +41,8 @@ function saveDB(data) {
 
 function isAuthorized(number) {
     const data = getDB();
+    // অ্যাডমিন সবসময় অনুমোদিত
+    if (number === ADMIN_NUMBER) return true;
     return data.hasOwnProperty(number);
 }
 
@@ -49,8 +50,10 @@ function updateUsage(number) {
     let data = getDB();
     if (data[number] !== undefined) {
         data[number] += 1;
-        saveDB(data);
+    } else {
+        data[number] = 1;
     }
+    saveDB(data);
 }
 
 // ====== SERVER (QR DISPLAY) ======
@@ -68,15 +71,13 @@ http.createServer(async (req, res) => {
             const qrImage = await qrcode.toDataURL(lastQR);
             res.writeHead(200, { "Content-Type": "text/html" });
             res.end(`<html><body style="text-align:center;background:#111;color:#fff;font-family:sans-serif">
-                <h2>📱 WhatsApp QR Code</h2>
-                <img src="${qrImage}" style="width:280px;border:4px solid #25D366;border-radius:12px"/>
-                <p>Scan to connect</p><meta http-equiv="refresh" content="30">
+                <h2>📱 Scan QR Code</h2><img src="${qrImage}" style="width:280px"/><meta http-equiv="refresh" content="30">
             </body></html>`);
         } catch (e) { res.writeHead(500); res.end("QR error"); }
     } else {
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(`<html><body style="text-align:center;background:#111;color:#fff;font-family:sans-serif">
-            <h2>⏳ Loading QR...</h2><meta http-equiv="refresh" content="10"></body></html>`);
+            <h2>⏳ Loading...</h2><meta http-equiv="refresh" content="10"></body></html>`);
     }
 }).listen(PORT);
 
@@ -87,34 +88,14 @@ async function pushToGitHub() {
         const token = process.env.GITHUB_TOKEN;
         const branch = process.env.GITHUB_BRANCH || "main";
         if (!repo || !token) return;
-        
         execSync(`git config --global user.email "bot@bot.com"`);
         execSync(`git config --global user.name "WA Bot"`);
-        const remoteUrl = `https://${token}@github.com/${repo}.git`;
-        
-        try { execSync(`git remote set-url origin ${remoteUrl}`); } 
-        catch { execSync(`git remote add origin ${remoteUrl}`); }
-        
+        execSync(`git remote set-url origin https://${token}@github.com/${repo}.git`);
         execSync(`git add -f auth_info_baileys/ authorized_numbers.json`);
-        execSync(`git commit -m "update data" --allow-empty`);
+        execSync(`git commit -m "update session/db" --allow-empty`);
         execSync(`git push origin ${branch} --force`);
-        console.log("✅ GitHub-এ ব্যাকআপ নেওয়া হয়েছে।");
-    } catch (e) { console.log("⚠️ Sync error:", e.message); }
-}
-
-// ====== NID HELPER FUNCTIONS ======
-async function generateNIDCard(mappedData) {
-    const params = new URLSearchParams();
-    Object.keys(mappedData).forEach(key => params.append(key, mappedData[key]));
-    params.append("issueDate", new Date().toLocaleDateString("en-GB"));
-
-    const response = await axios.post(API_GENERATE_URL, params.toString(), {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
-
-    const match = response.data.match(/id=([0-9]+)/);
-    const fileId = match ? match[1] : Date.now();
-    return `${BASE_URL}?id=${fileId}`;
+        console.log("✅ GitHub Sync Done!");
+    } catch (e) { console.log("⚠️ Sync Error:", e.message); }
 }
 
 // ====== MAIN BOT ======
@@ -140,7 +121,7 @@ async function startBot() {
         if (qr) { lastQR = qr; isConnected = false; }
         if (connection === "open") {
             lastQR = ""; isConnected = true;
-            console.log("✅ Connected!");
+            console.log("✅ Connected Successfully!");
             await pushToGitHub();
         }
         if (connection === "close") {
@@ -159,17 +140,22 @@ async function startBot() {
             const args = textMsg.split(" ");
             const command = args[0].toLowerCase();
 
-            // --- ১. অ্যাডমিন কমান্ডস ---
+            // লগে চেক করার জন্য
+            console.log(`📩 Message from: ${from} | Text: ${textMsg}`);
+
+            // ১. অ্যাডমিন কমান্ডস
             if (from === ADMIN_NUMBER) {
+                if (command === ".ping") {
+                    await sock.sendMessage(from, { text: "বট সচল আছে! ✅" });
+                    continue;
+                }
                 if (command === ".add") {
                     const target = args[1]?.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
                     let data = getDB();
-                    if (!data[target]) {
-                        data[target] = 0;
-                        saveDB(data);
-                        await sock.sendMessage(from, { text: `✅ ${args[1]} অনুমোদিত হয়েছে।` });
-                        await pushToGitHub();
-                    }
+                    data[target] = 0;
+                    saveDB(data);
+                    await sock.sendMessage(from, { text: `✅ ${args[1]} অনুমোদিত হয়েছে।` });
+                    await pushToGitHub();
                     continue;
                 }
                 if (command === ".remove") {
@@ -177,71 +163,78 @@ async function startBot() {
                     let data = getDB();
                     delete data[target];
                     saveDB(data);
-                    await sock.sendMessage(from, { text: `❌ ${args[1]} রিমুভ করা হয়েছে।` });
+                    await sock.sendMessage(from, { text: `❌ ${args[1]} রিমুভ হয়েছে।` });
                     await pushToGitHub();
                     continue;
                 }
                 if (command === ".list") {
                     const data = getDB();
-                    let listMsg = "📑 *অনুমোদিত ইউজার লিস্ট:*\n\n";
+                    let listMsg = "📑 *ইউজার লিস্ট:*\n\n";
                     Object.keys(data).forEach((num, i) => {
-                        listMsg += `${i+1}. 📱 ${num.split('@')[0]}\n   💳 তৈরি করেছে: ${data[num]} টি\n\n`;
+                        listMsg += `${i+1}. 📱 ${num.split('@')[0]} (কার্ড: ${data[num]})\n`;
                     });
                     await sock.sendMessage(from, { text: listMsg });
                     continue;
                 }
             }
 
-            // --- ২. অ্যাক্সেস কন্ট্রোল ---
-            if (!isAuthorized(from)) continue;
+            // ২. অ্যাক্সেস কন্ট্রোল
+            if (!isAuthorized(from)) {
+                console.log(`🚫 Unauthorized: ${from}`);
+                continue;
+            }
 
-            // --- ৩. PDF প্রসেসিং ---
+            // ৩. NID প্রসেসিং
             if (m.message.documentMessage) {
+                if (!m.message.documentMessage.mimetype.includes("pdf")) continue;
+                
                 try {
-                    const mimetype = m.message.documentMessage.mimetype;
-                    if (!mimetype.includes("pdf")) continue;
-
-                    await sock.sendMessage(from, { text: "⏳ প্রসেস শুরু হচ্ছে..." });
+                    await sock.sendMessage(from, { text: "⏳ প্রসেসিং..." });
                     const pdfBuffer = await downloadMediaMessage(m, "buffer", {});
                     
-                    // Extract
                     const form = new FormData();
                     form.append("pdf", pdfBuffer, { filename: "nid.pdf", contentType: "application/pdf" });
-                    const apiResponse = await axios.post(API_EXTRACT_URL, form, { headers: form.getHeaders(), timeout: 60000 });
                     
-                    if (!apiResponse.data || (apiResponse.data.status !== "success" && !apiResponse.data.success)) {
-                        throw new Error("API থেকে ডাটা পাওয়া যায়নি।");
-                    }
+                    const apiRes = await axios.post(API_EXTRACT_URL, form, { headers: form.getHeaders(), timeout: 60000 });
+                    const d = apiRes.data.data;
+                    
+                    if (!d) throw new Error("API ডাটা দিতে পারেনি।");
 
-                    const d = apiResponse.data.data;
+                    // কার্ড জেনারেট
+                    const params = new URLSearchParams();
                     const images = d.images || [];
                     const mapped = {
-                        nationalId: d.nationalId || d.nid || "",
-                        nameBangla: d.nameBangla || d.name_bn || "",
-                        nameEnglish: d.nameEnglish || d.name_en || "",
-                        dateOfBirth: d.dateOfBirth || d.dob || "",
+                        nid: d.nationalId || d.nid || "",
+                        nameBangla: d.nameBangla || "",
+                        nameEnglish: d.nameEnglish || "",
+                        dob: d.dateOfBirth || "",
                         birthPlace: d.birthPlace || "",
-                        fatherName: d.fatherName || d.father || "",
-                        motherName: d.motherName || d.mother || "",
+                        nameFather: d.fatherName || "",
+                        nameMother: d.motherName || "",
                         bloodGroup: d.bloodGroup || "",
-                        address: d.address || d.fulladdress || "",
-                        userIMG: images[0] || "",
-                        signIMG: images[1] || "",
+                        fulladdress: d.address || "",
+                        imageUrl12: images[0] || "",
+                        imageUrl22: images[1] || "",
+                        issueDate: new Date().toLocaleDateString("en-GB")
                     };
 
-                    const cardLink = await generateNIDCard(mapped);
-                    updateUsage(from); // কাউন্টার বাড়ানো
+                    Object.keys(mapped).forEach(k => params.append(k, mapped[k]));
+                    const genRes = await axios.post(API_GENERATE_URL, params.toString());
+                    
+                    const fileId = genRes.data.match(/id=([0-9]+)/)?.[1] || Date.now();
+                    const cardLink = `${BASE_URL}?id=${fileId}`;
 
-                    await sock.sendMessage(from, {
-                        text: `✅ *NID কার্ড প্রস্তুত!*\n👤 নাম: ${mapped.nameBangla}\n🪪 NID: ${mapped.nationalId}\n🔗 লিংক: ${cardLink}`
+                    updateUsage(from);
+                    await sock.sendMessage(from, { 
+                        text: `✅ *কার্ড প্রস্তুত!*\n👤 নাম: ${mapped.nameBangla}\n🔗 লিংক: ${cardLink}` 
                     }, { quoted: m });
 
-                } catch (err) {
-                    await sock.sendMessage(from, { text: `⚠️ এরর: ${err.message}` });
+                } catch (e) {
+                    await sock.sendMessage(from, { text: `⚠️ এরর: ${e.message}` });
                 }
             }
         }
     });
 }
 
-startBot().catch(err => console.error(err));
+startBot().catch(e => console.error(e));
