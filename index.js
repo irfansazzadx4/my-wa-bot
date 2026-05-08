@@ -20,7 +20,6 @@ const fs        = require("fs");
 const os        = require("os");
 const path      = require("path");
 const crypto    = require("crypto");
-const puppeteer = require("puppeteer");
 
 // ============================================================
 //  CONFIG
@@ -34,7 +33,8 @@ const CONFIG = {
     STATS_FILE      : "./stats.json",
     PORT            : process.env.PORT || 3000,
     ADMIN_PASS      : process.env.ADMIN_PASS || "admin123",
-    TEMP_DIR        : os.tmpdir(), // temporary PDF/HTML ফাইল রাখার জায়গা
+    HTML2PDF_URL    : "https://auto.onlinebd.top/bot/html2pdf.php",
+    HTML2PDF_SECRET : "nid_pdf_secret_2025",
 };
 
 // ============================================================
@@ -287,64 +287,11 @@ function mapAPIData(api) {
 }
 
 // ============================================================
-//  HTML → PDF  (Puppeteer)
-// ============================================================
-async function htmlToPdfBuffer(html) {
-    // temp HTML ফাইল লিখি
-    const tmpHtml = path.join(CONFIG.TEMP_DIR, `nid_${crypto.randomBytes(8).toString("hex")}.html`);
-    fs.writeFileSync(tmpHtml, html, "utf8");
-
-    let browser;
-    try {
-        // Railway: PUPPETEER_EXECUTABLE_PATH=/run/current-system/sw/bin/chromium
-        // Render:  puppeteer নিজের Chrome ব্যবহার করে (executablePath দেওয়া লাগে না)
-        const launchOptions = {
-            headless: "new",
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--disable-extensions",
-                "--no-zygote",
-                "--single-process",
-            ],
-        };
-        if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-            launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-        }
-        browser = await puppeteer.launch(launchOptions);
-
-        const page = await browser.newPage();
-
-        // file:// protocol দিয়ে local HTML লোড — সব image/font লোড হওয়া পর্যন্ত অপেক্ষা
-        await page.goto(`file://${tmpHtml}`, {
-            waitUntil: "networkidle0",
-            timeout  : 60000,
-        });
-
-        // NID card সাইজ অনুযায়ী PDF generate
-        const pdfBuf = await page.pdf({
-            width          : "856px",
-            height         : "540px",
-            printBackground: true,
-            margin         : { top: "0", right: "0", bottom: "0", left: "0" },
-        });
-
-        return Buffer.from(pdfBuf);
-
-    } finally {
-        if (browser) await browser.close().catch(() => {});
-        try { fs.unlinkSync(tmpHtml); } catch {}
-    }
-}
-
-// ============================================================
-//  GENERATE NID CARD HTML → return PDF buffer
+//  GENERATE NID CARD → PHP API দিয়ে HTML→PDF → Buffer return
 // ============================================================
 async function generateNIDCard(mappedData) {
 
+    // Step 1: NID card HTML generate করো
     const params = new URLSearchParams({
         nid        : mappedData.nationalId,
         pin        : "",
@@ -362,7 +309,7 @@ async function generateNIDCard(mappedData) {
         issueDate  : new Date().toLocaleDateString("en-GB"),
     });
 
-    const res = await axios.post(
+    const htmlRes = await axios.post(
         CONFIG.API_GENERATE_URL,
         params.toString(),
         {
@@ -372,11 +319,26 @@ async function generateNIDCard(mappedData) {
         }
     );
 
-    const html = res.data;
+    const html = htmlRes.data;
     if (!html || html.length < 100) throw new Error("Empty HTML from card generator");
 
-    // HTML → PDF buffer (Puppeteer দিয়ে)
-    const pdfBuffer = await htmlToPdfBuffer(html);
+    // Step 2: PHP API তে HTML পাঠাও, PDF base64 পাও
+    const pdfRes = await axios.post(
+        CONFIG.HTML2PDF_URL,
+        JSON.stringify({ html, secret: CONFIG.HTML2PDF_SECRET }),
+        {
+            headers: { "Content-Type": "application/json" },
+            timeout: 60000,
+        }
+    );
+
+    if (!pdfRes.data.success) {
+        throw new Error("PDF conversion failed: " + (pdfRes.data.error || "unknown"));
+    }
+
+    // base64 → Buffer
+    const pdfBuffer = Buffer.from(pdfRes.data.pdf, "base64");
+    console.log(`✅ PHP PDF size: ${pdfBuffer.length} bytes`);
     return pdfBuffer;
 }
 
