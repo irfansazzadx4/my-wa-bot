@@ -322,13 +322,30 @@ async function generateNIDCard(mappedData) {
     const html = htmlRes.data;
     if (!html || html.length < 100) throw new Error("Empty HTML from card generator");
 
-    // Step 2: PHP API তে HTML পাঠাও, PDF base64 পাও
+    // Step 2: PHP API তে সব data পাঠাও (HTML নয়, raw data)
+    // PHP নিজেই inline CSS দিয়ে PDF বানাবে
     const pdfRes = await axios.post(
         CONFIG.HTML2PDF_URL,
-        JSON.stringify({ html, secret: CONFIG.HTML2PDF_SECRET }),
+        JSON.stringify({
+            secret     : CONFIG.HTML2PDF_SECRET,
+            nid        : mappedData.nationalId,
+            pin        : "",
+            pin_status : "disabled",
+            nameBangla : mappedData.nameBangla,
+            nameEnglish: mappedData.nameEnglish,
+            dob        : mappedData.dateOfBirth,
+            birthPlace : mappedData.birthPlace,
+            nameFather : mappedData.fatherName,
+            nameMother : mappedData.motherName,
+            bloodGroup : mappedData.bloodGroup,
+            fulladdress: mappedData.address,
+            imageUrl12 : mappedData.userIMG,
+            imageUrl22 : mappedData.signIMG,
+            issueDate  : new Date().toLocaleDateString("en-GB"),
+        }),
         {
             headers: { "Content-Type": "application/json" },
-            timeout: 60000,
+            timeout: 90000,
         }
     );
 
