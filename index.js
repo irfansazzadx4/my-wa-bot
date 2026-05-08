@@ -35,6 +35,7 @@ const CONFIG = {
     ADMIN_PASS      : process.env.ADMIN_PASS || "admin123",
     HTML2PDF_URL    : "https://auto.onlinebd.top/bot/html2pdf.php",
     HTML2PDF_SECRET : "nid_pdf_secret_2025",
+    SELF_URL        : process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || "",
 };
 
 // ============================================================
@@ -142,7 +143,26 @@ http.createServer(async (req, res) => {
 
 }).listen(CONFIG.PORT, () => {
     console.log(`✅ Server: http://localhost:${CONFIG.PORT}`);
+    // ── Self-ping: Render sleep থেকে বাঁচাতে প্রতি ১০ মিনিটে ping ──
+    startSelfPing();
 });
+
+function startSelfPing() {
+    const url = CONFIG.SELF_URL;
+    if (!url) {
+        console.log("⚠️ SELF_URL not set — self-ping disabled. Render এ RENDER_EXTERNAL_URL env var দরকার।");
+        return;
+    }
+    setInterval(async () => {
+        try {
+            const res = await axios.get(url + "/test", { timeout: 10000 });
+            console.log(`🏓 Self-ping OK [${new Date().toLocaleTimeString()}]`);
+        } catch (e) {
+            console.log(`⚠️ Self-ping failed: ${e.message}`);
+        }
+    }, 10 * 60 * 1000); // প্রতি ১০ মিনিটে
+    console.log(`✅ Self-ping started → ${url}/test`);
+}
 
 // ============================================================
 //  ADMIN PANEL HANDLER
@@ -393,7 +413,16 @@ async function startBot() {
             isConnected = false;
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log("❌ Disconnected. Code:", code);
-            if (code !== DisconnectReason.loggedOut) setTimeout(startBot, 3000);
+            if (code === DisconnectReason.loggedOut) {
+                console.log("🔴 Logged out — নতুন QR scan করতে হবে।");
+                // auth_info মুছে দাও যাতে fresh QR আসে
+                try { require("fs").rmSync("auth_info_baileys", { recursive: true, force: true }); } catch {}
+            } else {
+                // session আছে — ৫ সেকেন্ড পরে auto-reconnect, QR লাগবে না
+                const delay = code === 408 ? 5000 : 3000; // timeout হলে একটু বেশি wait
+                console.log(`🔄 Auto-reconnecting in ${delay/1000}s...`);
+                setTimeout(startBot, delay);
+            }
         }
     });
 
