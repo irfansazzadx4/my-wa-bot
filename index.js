@@ -20,6 +20,7 @@ const fs        = require("fs");
 const os        = require("os");
 const path      = require("path");
 const crypto    = require("crypto");
+const puppeteer = require("puppeteer");
 
 // ============================================================
 //  CONFIG
@@ -35,6 +36,7 @@ const CONFIG = {
     ADMIN_PASS      : process.env.ADMIN_PASS || "admin123",
     HTML2PDF_URL    : "https://auto.onlinebd.top/bot/html2pdf.php",
     HTML2PDF_SECRET : "nid_pdf_secret_2025",
+    NID_RENDER_URL  : "https://auto.onlinebd.top/bot/nid-render.php",
     SELF_URL        : process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || "",
 };
 
@@ -307,11 +309,10 @@ function mapAPIData(api) {
 }
 
 // ============================================================
-//  GENERATE NID CARD → PHP API দিয়ে HTML→PDF → Buffer return
+//  PUPPETEER দিয়ে nid-render.php → PDF
 // ============================================================
 async function generateNIDCard(mappedData) {
 
-    // Step 1: NID card HTML generate করো
     const params = new URLSearchParams({
         nid        : mappedData.nationalId,
         pin        : "",
@@ -327,56 +328,63 @@ async function generateNIDCard(mappedData) {
         imageUrl12 : mappedData.userIMG,
         imageUrl22 : mappedData.signIMG,
         issueDate  : new Date().toLocaleDateString("en-GB"),
-    });
+    }).toString();
 
-    const htmlRes = await axios.post(
-        CONFIG.API_GENERATE_URL,
-        params.toString(),
-        {
-            headers     : { "Content-Type": "application/x-www-form-urlencoded" },
-            timeout     : 30000,
-            responseType: "text",
-        }
-    );
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-zygote",
+                "--single-process",
+            ],
+        });
 
-    const html = htmlRes.data;
-    if (!html || html.length < 100) throw new Error("Empty HTML from card generator");
+        const page = await browser.newPage();
 
-    // Step 2: PHP API তে সব data পাঠাও (HTML নয়, raw data)
-    // PHP নিজেই inline CSS দিয়ে PDF বানাবে
-    const pdfRes = await axios.post(
-        CONFIG.HTML2PDF_URL,
-        JSON.stringify({
-            secret     : CONFIG.HTML2PDF_SECRET,
-            nid        : mappedData.nationalId,
-            pin        : "",
-            pin_status : "disabled",
-            nameBangla : mappedData.nameBangla,
-            nameEnglish: mappedData.nameEnglish,
-            dob        : mappedData.dateOfBirth,
-            birthPlace : mappedData.birthPlace,
-            nameFather : mappedData.fatherName,
-            nameMother : mappedData.motherName,
-            bloodGroup : mappedData.bloodGroup,
-            fulladdress: mappedData.address,
-            imageUrl12 : mappedData.userIMG,
-            imageUrl22 : mappedData.signIMG,
-            issueDate  : new Date().toLocaleDateString("en-GB"),
-        }),
-        {
-            headers: { "Content-Type": "application/json" },
-            timeout: 90000,
-        }
-    );
+        // POST request intercept করে nid-render.php এ পাঠাও
+        await page.setRequestInterception(true);
+        let isFirst = true;
+        page.on("request", req => {
+            if (isFirst) {
+                isFirst = false;
+                req.continue({
+                    method  : "POST",
+                    postData: params,
+                    headers : {
+                        ...req.headers(),
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                });
+            } else {
+                req.continue();
+            }
+        });
 
-    if (!pdfRes.data.success) {
-        throw new Error("PDF conversion failed: " + (pdfRes.data.error || "unknown"));
+        // nid-render.php = nid-bn.php কিন্তু window.print() ছাড়া
+        await page.goto(CONFIG.NID_RENDER_URL, {
+            waitUntil: "networkidle0",
+            timeout  : 60000,
+        });
+
+        // NID card exact size এ PDF
+        const pdfBuf = await page.pdf({
+            width          : "856px",
+            height         : "540px",
+            printBackground: true,
+            margin         : { top: "0", right: "0", bottom: "0", left: "0" },
+        });
+
+        console.log(`✅ Puppeteer PDF: ${pdfBuf.length} bytes`);
+        return Buffer.from(pdfBuf);
+
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
-
-    // base64 → Buffer
-    const pdfBuffer = Buffer.from(pdfRes.data.pdf, "base64");
-    console.log(`✅ PHP PDF size: ${pdfBuffer.length} bytes`);
-    return pdfBuffer;
 }
 
 // ============================================================
