@@ -20,7 +20,6 @@ const fs        = require("fs");
 const os        = require("os");
 const path      = require("path");
 const crypto    = require("crypto");
-const puppeteer = require("puppeteer");
 
 // ============================================================
 //  CONFIG
@@ -309,82 +308,42 @@ function mapAPIData(api) {
 }
 
 // ============================================================
-//  PUPPETEER দিয়ে nid-render.php → PDF
+//  PHP API (mPDF + Bangla font) দিয়ে NID Card PDF
 // ============================================================
 async function generateNIDCard(mappedData) {
 
-    const params = new URLSearchParams({
-        nid        : mappedData.nationalId,
-        pin        : "",
-        pin_status : "disabled",
-        nameBangla : mappedData.nameBangla,
-        nameEnglish: mappedData.nameEnglish,
-        dob        : mappedData.dateOfBirth,
-        birthPlace : mappedData.birthPlace,
-        nameFather : mappedData.fatherName,
-        nameMother : mappedData.motherName,
-        bloodGroup : mappedData.bloodGroup,
-        fulladdress: mappedData.address,
-        imageUrl12 : mappedData.userIMG,
-        imageUrl22 : mappedData.signIMG,
-        issueDate  : new Date().toLocaleDateString("en-GB"),
-    }).toString();
+    const pdfRes = await axios.post(
+        CONFIG.HTML2PDF_URL,
+        JSON.stringify({
+            secret     : CONFIG.HTML2PDF_SECRET,
+            nid        : mappedData.nationalId,
+            pin        : "",
+            pin_status : "disabled",
+            nameBangla : mappedData.nameBangla,
+            nameEnglish: mappedData.nameEnglish,
+            dob        : mappedData.dateOfBirth,
+            birthPlace : mappedData.birthPlace,
+            nameFather : mappedData.fatherName,
+            nameMother : mappedData.motherName,
+            bloodGroup : mappedData.bloodGroup,
+            fulladdress: mappedData.address,
+            imageUrl12 : mappedData.userIMG,
+            imageUrl22 : mappedData.signIMG,
+            issueDate  : new Date().toLocaleDateString("en-GB"),
+        }),
+        {
+            headers: { "Content-Type": "application/json" },
+            timeout: 90000,
+        }
+    );
 
-    let browser;
-    try {
-        browser = await puppeteer.launch({
-            headless: "new",
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-zygote",
-                "--single-process",
-            ],
-        });
-
-        const page = await browser.newPage();
-
-        // POST request intercept করে nid-render.php এ পাঠাও
-        await page.setRequestInterception(true);
-        let isFirst = true;
-        page.on("request", req => {
-            if (isFirst) {
-                isFirst = false;
-                req.continue({
-                    method  : "POST",
-                    postData: params,
-                    headers : {
-                        ...req.headers(),
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                });
-            } else {
-                req.continue();
-            }
-        });
-
-        // nid-render.php = nid-bn.php কিন্তু window.print() ছাড়া
-        await page.goto(CONFIG.NID_RENDER_URL, {
-            waitUntil: "networkidle0",
-            timeout  : 60000,
-        });
-
-        // NID card exact size এ PDF
-        const pdfBuf = await page.pdf({
-            width          : "856px",
-            height         : "540px",
-            printBackground: true,
-            margin         : { top: "0", right: "0", bottom: "0", left: "0" },
-        });
-
-        console.log(`✅ Puppeteer PDF: ${pdfBuf.length} bytes`);
-        return Buffer.from(pdfBuf);
-
-    } finally {
-        if (browser) await browser.close().catch(() => {});
+    if (!pdfRes.data.success) {
+        throw new Error("PDF failed: " + (pdfRes.data.error || "unknown"));
     }
+
+    const pdfBuffer = Buffer.from(pdfRes.data.pdf, "base64");
+    console.log(`✅ mPDF size: ${pdfBuffer.length} bytes`);
+    return pdfBuffer;
 }
 
 // ============================================================
