@@ -436,14 +436,18 @@ async function startBot() {
 
     // ── MESSAGE HANDLER ──
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        console.log(`📨 upsert type=${type} count=${messages.length}`);
         if (type !== "notify") return;
 
         for (const m of messages) {
+            const from   = m.key?.remoteJid || "";
+            const msgType = m.message ? Object.keys(m.message)[0] : "none";
+            console.log(`📩 from=${from} type=${msgType} fromMe=${m.key?.fromMe}`);
+
             if (!m.message || m.key.fromMe) continue;
 
-            const from   = m.key.remoteJid;
-            const number = from.replace("@s.whatsapp.net", "").replace("@g.us", "");
-            const msgType = Object.keys(m.message)[0];
+            const number = from.replace("@s.whatsapp.net", "").replace("@g.us", "").replace("@lid", "");
+            const msgType2 = msgType;
             const text   = (
                 m.message.conversation ||
                 m.message.extendedTextMessage?.text || ""
