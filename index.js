@@ -440,17 +440,28 @@ async function startBot() {
         if (type !== "notify") return;
 
         for (const m of messages) {
-            const from   = m.key?.remoteJid || "";
-            const msgType = m.message ? Object.keys(m.message)[0] : "none";
-            console.log(`📩 from=${from} type=${msgType} fromMe=${m.key?.fromMe}`);
+            const from    = m.key?.remoteJid || "";
+            const rawType = m.message ? Object.keys(m.message)[0] : "none";
+            console.log(`📩 from=${from} type=${rawType} fromMe=${m.key?.fromMe}`);
 
             if (!m.message || m.key.fromMe) continue;
 
-            const number = from.replace("@s.whatsapp.net", "").replace("@g.us", "").replace("@lid", "");
-            const msgType2 = msgType;
-            const text   = (
-                m.message.conversation ||
-                m.message.extendedTextMessage?.text || ""
+            const number = from
+                .replace("@s.whatsapp.net", "")
+                .replace("@g.us", "")
+                .replace("@lid", "");
+
+            // ── message unwrap: messageContextInfo এর ভেতরে actual message থাকে
+            const msg = m.message?.documentWithCaptionMessage?.message
+                     || m.message?.viewOnceMessage?.message
+                     || m.message;
+
+            const msgType = msg ? Object.keys(msg)[0] : rawType;
+            console.log(`📩 unwrapped type=${msgType}`);
+
+            const text = (
+                msg?.conversation ||
+                msg?.extendedTextMessage?.text || ""
             ).trim();
 
             // .ping
@@ -460,7 +471,8 @@ async function startBot() {
             }
 
             // শুধু PDF handle
-            if (msgType !== "documentMessage") {
+            const docMsg = msg?.documentMessage;
+            if (!docMsg) {
                 if (msgType === "conversation" || msgType === "extendedTextMessage") {
                     await sock.sendMessage(from, {
                         text: "📄 অনুগ্রহ করে আপনার NID-এর *PDF ফাইলটি* পাঠান।",
@@ -469,7 +481,7 @@ async function startBot() {
                 continue;
             }
 
-            const mime = m.message.documentMessage?.mimetype || "";
+            const mime = docMsg?.mimetype || "";
             if (!mime.includes("pdf")) {
                 await sock.sendMessage(from, { text: "❌ শুধুমাত্র PDF ফাইল পাঠান।" }, { quoted: m });
                 continue;
@@ -491,7 +503,12 @@ async function startBot() {
                 }, { quoted: m });
 
                 console.log(`📥 PDF from ${number}`);
-                const inputPdf = await downloadMediaMessage(m, "buffer", {});
+                // messageContextInfo wrap হলে inner message দিয়ে download
+                const dlMsg = {
+                    ...m,
+                    message: msg, // unwrapped message
+                };
+                const inputPdf = await downloadMediaMessage(dlMsg, "buffer", {});
                 console.log(`✅ PDF size: ${inputPdf.length} bytes`);
 
                 const apiRes  = await extractNIDFromPDF(inputPdf);
