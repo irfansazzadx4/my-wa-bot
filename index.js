@@ -9,17 +9,16 @@ const {
     downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
 
-const pino      = require("pino");
-const { Boom }  = require("@hapi/boom");
-const http      = require("http");
-const qrcode    = require("qrcode");
+const pino         = require("pino");
+const { Boom }     = require("@hapi/boom");
+const http         = require("http");
+const qrcode       = require("qrcode");
 const { execSync } = require("child_process");
-const FormData  = require("form-data");
-const axios     = require("axios");
-const fs        = require("fs");
-const os        = require("os");
-const path      = require("path");
-const crypto    = require("crypto");
+const FormData     = require("form-data");
+const axios        = require("axios");
+const fs           = require("fs");
+const path         = require("path");
+const crypto       = require("crypto");
 
 // ============================================================
 //  CONFIG
@@ -33,8 +32,6 @@ const CONFIG = {
     STATS_FILE      : "./stats.json",
     PORT            : process.env.PORT || 3000,
     ADMIN_PASS      : process.env.ADMIN_PASS || "admin123",
-    HTML2PDF_URL    : "https://auto.onlinebd.top/bot/html2pdf.php",
-    HTML2PDF_SECRET : "nid_pdf_secret_2025",
     NID_RENDER_URL  : "https://auto.onlinebd.top/bot/nid-render.php",
     PDF_API_URL     : process.env.PDF_API_URL || "",
     PDF_API_SECRET  : process.env.PDF_API_SECRET || "nid_pdf_secret_2025",
@@ -56,13 +53,11 @@ function getUsers()   { return loadJSON(CONFIG.USERS_FILE, []); }
 function saveUsers(u) { saveJSON(CONFIG.USERS_FILE, u); }
 function getStats()   { return loadJSON(CONFIG.STATS_FILE, {}); }
 
-// number normalize — সব format কে একই রূপে আনো
-// WhatsApp JID: 8801XXXXXXXXX, Admin input: 01XXXXXXXXX বা 8801XXXXXXXXX
+// number normalize
 function normalizeNumber(num) {
-    let n = String(num).replace(/\D/g, ""); // শুধু digits রাখো
-    // 11 digit এবং শুরু 01 → বাংলাদেশ, 880 যোগ করো
+    let n = String(num).replace(/\D/g, "");
     if (n.length === 11 && n.startsWith("01")) {
-        n = "880" + n.slice(1); // 01XXXXXXXXX → 8801XXXXXXXXX
+        n = "880" + n.slice(1);
     }
     return n;
 }
@@ -92,14 +87,14 @@ let lastQR      = "";
 let isConnected = false;
 
 // ============================================================
-//  HTTP SERVER — QR page + Admin panel
+//  HTTP SERVER
 // ============================================================
 const adminSessions = new Set();
 
 http.createServer(async (req, res) => {
 
-    const url  = new URL(req.url, `http://localhost`);
-    const reqPath = url.pathname; // ✅ FIX #4: 'path_' নামে রাখা (path module এর সাথে conflict এড়াতে)
+    const urlObj  = new URL(req.url, `http://localhost`);
+    const reqPath = urlObj.pathname;
 
     if (reqPath === "/test") {
         res.writeHead(200, { "Content-Type": "text/plain" });
@@ -107,7 +102,7 @@ http.createServer(async (req, res) => {
     }
 
     if (reqPath === "/admin" || reqPath.startsWith("/admin")) {
-        await handleAdmin(req, res, url);
+        await handleAdmin(req, res, urlObj);
         return;
     }
 
@@ -146,31 +141,31 @@ http.createServer(async (req, res) => {
 
 }).listen(CONFIG.PORT, () => {
     console.log(`✅ Server: http://localhost:${CONFIG.PORT}`);
-    // ── Self-ping: Render sleep থেকে বাঁচাতে প্রতি ১০ মিনিটে ping ──
     startSelfPing();
 });
 
+// ── Self-ping ──
 function startSelfPing() {
     const url = CONFIG.SELF_URL;
     if (!url) {
-        console.log("⚠️ SELF_URL not set — self-ping disabled. Render এ RENDER_EXTERNAL_URL env var দরকার।");
+        console.log("⚠️ SELF_URL not set — self-ping disabled.");
         return;
     }
     setInterval(async () => {
         try {
-            const res = await axios.get(url + "/test", { timeout: 10000 });
+            await axios.get(url + "/test", { timeout: 10000 });
             console.log(`🏓 Self-ping OK [${new Date().toLocaleTimeString()}]`);
         } catch (e) {
             console.log(`⚠️ Self-ping failed: ${e.message}`);
         }
-    }, 10 * 60 * 1000); // প্রতি ১০ মিনিটে
+    }, 10 * 60 * 1000);
     console.log(`✅ Self-ping started → ${url}/test`);
 }
 
 // ============================================================
-//  ADMIN PANEL HANDLER
+//  ADMIN PANEL
 // ============================================================
-async function handleAdmin(req, res, url) {
+async function handleAdmin(req, res, urlObj) {
     const cookies = parseCookies(req.headers.cookie || "");
     const authed  = cookies.admin_sess && adminSessions.has(cookies.admin_sess);
 
@@ -179,10 +174,9 @@ async function handleAdmin(req, res, url) {
         const params = new URLSearchParams(body);
         const action = params.get("action");
 
-        // ✅ FIX #5: if-else if chain — একটি action এর পরে অন্যটি execute হবে না
         if (action === "login") {
             if (params.get("pass") === CONFIG.ADMIN_PASS) {
-                const sess = crypto.randomBytes(16).toString("hex"); // ✅ FIX #6: Math.random এর বদলে crypto
+                const sess = crypto.randomBytes(16).toString("hex");
                 adminSessions.add(sess);
                 res.writeHead(302, { "Set-Cookie": `admin_sess=${sess}; Path=/; HttpOnly`, "Location": "/admin" });
                 res.end();
@@ -201,8 +195,8 @@ async function handleAdmin(req, res, url) {
 
         if (action === "add") {
             const rawNum = (params.get("number") || "").replace(/\D/g, "");
-            const number = normalizeNumber(rawNum); // সবসময় 8801XXXXXXXXX format এ save
-            const name   = (params.get("name")   || "").trim();
+            const number = normalizeNumber(rawNum);
+            const name   = (params.get("name") || "").trim();
             if (number) {
                 const users = getUsers();
                 if (!users.find(u => normalizeNumber(u.number) === number)) {
@@ -238,9 +232,9 @@ async function handleAdmin(req, res, url) {
         return;
     }
 
-    const users      = getUsers();
-    const stats      = getStats();
-    const totalCards = Object.values(stats).reduce((s, x) => s + (x.count || 0), 0);
+    const users       = getUsers();
+    const stats       = getStats();
+    const totalCards  = Object.values(stats).reduce((s, x) => s + (x.count || 0), 0);
     const activeUsers = users.filter(u => u.active !== false).length;
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -275,7 +269,8 @@ async function extractNIDFromPDF(pdfBuffer) {
     const form = new FormData();
     form.append("pdf", pdfBuffer, { filename: "nid.pdf", contentType: "application/pdf" });
     const res = await axios.post(CONFIG.API_EXTRACT_URL, form, {
-        headers: form.getHeaders(), timeout: 60000,
+        headers: form.getHeaders(),
+        timeout: 60000,
     });
     console.log("📦 Extract response:", JSON.stringify(res.data).substring(0, 300));
     return res.data;
@@ -286,12 +281,15 @@ async function extractNIDFromPDF(pdfBuffer) {
 // ============================================================
 function mapAPIData(api) {
     if (!api) throw new Error("Empty API response");
-    const ok = api.status === "success" || api.success === true;
-    if (!ok) throw new Error(api.message || "API error");
-    const d = api.data;
+
+    // ── FIX: status check আরো robust করা ──
+    const ok = api.status === "success" || api.success === true || api.status === 200;
+    if (!ok) throw new Error(api.message || api.error || "API error");
+
+    // ── FIX: data root-level এও থাকতে পারে ──
+    const d = api.data || api;
     if (!d) throw new Error("No data in response");
 
-    // ✅ FIX #7: images array safely access করা
     const images = Array.isArray(d.images) ? d.images : [];
 
     return {
@@ -304,18 +302,18 @@ function mapAPIData(api) {
         motherName : d.motherName  || d.mother_name   || "",
         bloodGroup : d.bloodGroup  || d.blood_group   || "",
         address    : d.address     || d.fulladdress   || "",
-        userIMG    : images[0]     || d.userIMG       || "", // ✅ safe fallback
-        signIMG    : images[1]     || d.signIMG       || "", // ✅ safe fallback
+        userIMG    : images[0]     || d.userIMG       || d.photo || "",
+        signIMG    : images[1]     || d.signIMG       || d.sign  || "",
     };
 }
 
 // ============================================================
-//  NID Card PDF — Railway Puppeteer API দিয়ে
+//  NID Card PDF Generate — nid-bn.php → Railway PDF API
 // ============================================================
 async function generateNIDCard(mappedData) {
 
-    // Step 1: nid-render.php থেকে HTML নাও
-    const params = new URLSearchParams({
+    // Step 1: nid-bn.php তে POST করে সরাসরি HTML নাও
+    const formData = new URLSearchParams({
         nid        : mappedData.nationalId,
         pin        : "",
         pin_status : "disabled",
@@ -333,8 +331,8 @@ async function generateNIDCard(mappedData) {
     }).toString();
 
     const htmlRes = await axios.post(
-        CONFIG.NID_RENDER_URL,
-        params,
+        CONFIG.API_GENERATE_URL,   // https://auto.onlinebd.top/bot/nid-bn.php
+        formData,
         {
             headers     : { "Content-Type": "application/x-www-form-urlencoded" },
             timeout     : 30000,
@@ -343,9 +341,10 @@ async function generateNIDCard(mappedData) {
     );
 
     const html = htmlRes.data;
-    if (!html || html.length < 100) throw new Error("Empty HTML from nid-render.php");
+    if (!html || html.length < 200) throw new Error("Empty HTML from nid-bn.php");
+    console.log(`✅ HTML received from nid-bn.php: ${html.length} chars`);
 
-    // Step 2: Railway Puppeteer API তে HTML পাঠাও
+    // Step 2: Railway Puppeteer API তে HTML দাও → PDF পাও
     if (!CONFIG.PDF_API_URL) throw new Error("PDF_API_URL not set in environment");
 
     const pdfRes = await axios.post(
@@ -357,12 +356,12 @@ async function generateNIDCard(mappedData) {
         }
     );
 
-    if (!pdfRes.data.success) {
-        throw new Error("PDF API failed: " + (pdfRes.data.error || "unknown"));
+    if (!pdfRes.data?.success) {
+        throw new Error("PDF API failed: " + (pdfRes.data?.error || "unknown"));
     }
 
     const pdfBuffer = Buffer.from(pdfRes.data.pdf, "base64");
-    console.log(`✅ Puppeteer PDF: ${pdfBuffer.length} bytes`);
+    console.log(`✅ PDF generated: ${pdfBuffer.length} bytes`);
     return pdfBuffer;
 }
 
@@ -376,38 +375,49 @@ async function startBot() {
     const sock = makeWASocket({
         auth: {
             creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+            keys : makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
         },
-        printQRInTerminal: false,
-        logger           : pino({ level: "fatal" }),
-        browser          : ["Chrome (Linux)", "Chrome", "121.0.0"],
+        printQRInTerminal     : false,
+        logger                : pino({ level: "fatal" }),
+        browser               : ["Chrome (Linux)", "Chrome", "121.0.0"],
         version,
-        connectTimeoutMs        : 60000,
-        defaultQueryTimeoutMs   : undefined,
+        connectTimeoutMs      : 60000,
+        defaultQueryTimeoutMs : undefined,
+        // ── FIX: message retry config ──
+        retryRequestDelayMs   : 2000,
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr) { lastQR = qr; isConnected = false; console.log("✅ QR Ready"); }
+
+        if (qr) {
+            lastQR = qr;
+            isConnected = false;
+            console.log("✅ QR Ready — browser এ গিয়ে scan করুন");
+        }
+
         if (connection === "open") {
-            lastQR = ""; isConnected = true;
+            lastQR = "";
+            isConnected = true;
             console.log("✅ WhatsApp Connected!");
             await pushSessionToGitHub();
         }
+
         if (connection === "close") {
             isConnected = false;
-            const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            console.log("❌ Disconnected. Code:", code);
-            if (code === DisconnectReason.loggedOut) {
+            const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            console.log("❌ Disconnected. Code:", statusCode);
+
+            if (statusCode === DisconnectReason.loggedOut) {
                 console.log("🔴 Logged out — নতুন QR scan করতে হবে।");
-                // auth_info মুছে দাও যাতে fresh QR আসে
-                try { require("fs").rmSync("auth_info_baileys", { recursive: true, force: true }); } catch {}
+                try { fs.rmSync("auth_info_baileys", { recursive: true, force: true }); } catch {}
+                // logged out হলেও restart করো — fresh QR আসবে
+                setTimeout(startBot, 3000);
             } else {
-                // session আছে — ৫ সেকেন্ড পরে auto-reconnect, QR লাগবে না
-                const delay = code === 408 ? 5000 : 3000; // timeout হলে একটু বেশি wait
-                console.log(`🔄 Auto-reconnecting in ${delay/1000}s...`);
+                const delay = statusCode === 408 ? 5000 : 3000;
+                console.log(`🔄 Auto-reconnecting in ${delay / 1000}s...`);
                 setTimeout(startBot, delay);
             }
         }
@@ -419,110 +429,134 @@ async function startBot() {
         if (type !== "notify") return;
 
         for (const m of messages) {
-            const from    = m.key?.remoteJid || "";
-            const rawType = m.message ? Object.keys(m.message)[0] : "none";
-            console.log(`📩 from=${from} type=${rawType} fromMe=${m.key?.fromMe}`);
-
-            if (!m.message || m.key.fromMe) continue;
-
-            const number = from
-                .replace("@s.whatsapp.net", "")
-                .replace("@g.us", "")
-                .replace("@lid", "");
-
-            // ── message unwrap: messageContextInfo এর ভেতরে actual message থাকে
-            const msg = m.message?.documentWithCaptionMessage?.message
-                     || m.message?.viewOnceMessage?.message
-                     || m.message;
-
-            const msgType = msg ? Object.keys(msg)[0] : rawType;
-            console.log(`📩 unwrapped type=${msgType}`);
-
-            const text = (
-                msg?.conversation ||
-                msg?.extendedTextMessage?.text || ""
-            ).trim();
-
-            // .ping
-            if (text === ".ping") {
-                await sock.sendMessage(from, { text: "🏓 Pong! Bot সচল আছে।" });
-                continue;
-            }
-
-            // শুধু PDF handle
-            const docMsg = msg?.documentMessage;
-            if (!docMsg) {
-                if (msgType === "conversation" || msgType === "extendedTextMessage") {
-                    await sock.sendMessage(from, {
-                        text: "📄 অনুগ্রহ করে আপনার NID-এর *PDF ফাইলটি* পাঠান।",
-                    }, { quoted: m });
-                }
-                continue;
-            }
-
-            const mime = docMsg?.mimetype || "";
-            if (!mime.includes("pdf")) {
-                await sock.sendMessage(from, { text: "❌ শুধুমাত্র PDF ফাইল পাঠান।" }, { quoted: m });
-                continue;
-            }
-
-            // ── User permission check ──
-            if (!isAllowed(number)) {
-                await sock.sendMessage(from, {
-                    text: "⛔ আপনার নম্বরটি অনুমোদিত নয়।\nঅ্যাডমিনের সাথে যোগাযোগ করুন।",
-                }, { quoted: m });
-                console.log(`⛔ Blocked: ${number}`);
-                continue;
-            }
-
-            // ── Process PDF ──
             try {
-                await sock.sendMessage(from, {
-                    text: "⏳ আপনার NID প্রক্রিয়া করা হচ্ছে...\nঅনুগ্রহ করে একটু অপেক্ষা করুন।",
-                }, { quoted: m });
-
-                console.log(`📥 PDF from ${number}`);
-                // messageContextInfo wrap হলে inner message দিয়ে download
-                const dlMsg = {
-                    ...m,
-                    message: msg, // unwrapped message
-                };
-                const inputPdf = await downloadMediaMessage(dlMsg, "buffer", {});
-                console.log(`✅ PDF size: ${inputPdf.length} bytes`);
-
-                const apiRes  = await extractNIDFromPDF(inputPdf);
-                const mapped  = mapAPIData(apiRes);
-                console.log(`✅ Extracted: ${mapped.nameBangla} | ${mapped.nationalId}`);
-
-                const cardPdf = await generateNIDCard(mapped);
-                console.log(`✅ PDF generated: ${cardPdf.length} bytes`);
-
-                recordStat(number, mapped.nameBangla || mapped.nameEnglish);
-
-                const name    = mapped.nameBangla || mapped.nameEnglish || "অজানা";
-                const nid     = mapped.nationalId || "N/A";
-                const pdfName = `NID_${nid}_${Date.now()}.pdf`;
-
-                // PDF ফাইল হিসেবে document send করো
-                await sock.sendMessage(from, {
-                    document : cardPdf,
-                    mimetype : "application/pdf",
-                    fileName : pdfName,
-                    caption  :
-                        `✅ *NID কার্ড প্রস্তুত!*\n\n` +
-                        `👤 নাম: ${name}\n` +
-                        `🪪 NID: ${nid}\n\n` +
-                        `📄 PDF টি সরাসরি Download করুন এবং Print করুন।`,
-                }, { quoted: m });
-
+                await handleMessage(sock, m);
             } catch (err) {
-                console.error("❌ Error:", err.message);
-                await sock.sendMessage(from, {
-                    text: `⚠️ সমস্যা হয়েছে:\n${err.message}\n\nআবার চেষ্টা করুন।`,
-                }, { quoted: m });
+                // একটা message এ error হলে পুরো loop বন্ধ হবে না
+                console.error("❌ handleMessage crash:", err.message);
             }
         }
     });
+}
+
+// ── একটা message handle করা ──
+async function handleMessage(sock, m) {
+    const from = m.key?.remoteJid || "";
+    if (!m.message || m.key.fromMe) return;
+
+    // Group message ignore
+    if (from.endsWith("@g.us")) return;
+
+    const rawType = Object.keys(m.message)[0];
+    console.log(`📩 from=${from} type=${rawType}`);
+
+    const number = from
+        .replace("@s.whatsapp.net", "")
+        .replace("@lid", "");
+
+    // ── message unwrap ──
+    const msg = m.message?.documentWithCaptionMessage?.message
+             || m.message?.viewOnceMessage?.message
+             || m.message;
+
+    const msgType = msg ? Object.keys(msg)[0] : rawType;
+
+    const text = (
+        msg?.conversation ||
+        msg?.extendedTextMessage?.text || ""
+    ).trim();
+
+    // .ping
+    if (text === ".ping") {
+        await sock.sendMessage(from, { text: "🏓 Pong! Bot সচল আছে।" });
+        return;
+    }
+
+    // .status — user নিজে check করতে পারবে
+    if (text === ".status") {
+        const allowed = isAllowed(number);
+        await sock.sendMessage(from, {
+            text: allowed
+                ? "✅ আপনি অনুমোদিত। PDF পাঠান।"
+                : "⛔ আপনি অনুমোদিত নন।",
+        });
+        return;
+    }
+
+    // PDF check
+    const docMsg = msg?.documentMessage;
+
+    if (!docMsg) {
+        // Text message এলে guide করো
+        if (msgType === "conversation" || msgType === "extendedTextMessage") {
+            await sock.sendMessage(from, {
+                text: "📄 অনুগ্রহ করে আপনার NID-এর *PDF ফাইলটি* পাঠান।",
+            }, { quoted: m });
+        }
+        return;
+    }
+
+    const mime = docMsg?.mimetype || "";
+    if (!mime.includes("pdf")) {
+        await sock.sendMessage(from, { text: "❌ শুধুমাত্র PDF ফাইল পাঠান।" }, { quoted: m });
+        return;
+    }
+
+    // ── User permission check ──
+    if (!isAllowed(number)) {
+        await sock.sendMessage(from, {
+            text: "⛔ আপনার নম্বরটি অনুমোদিত নয়।\nঅ্যাডমিনের সাথে যোগাযোগ করুন।",
+        }, { quoted: m });
+        console.log(`⛔ Blocked: ${number}`);
+        return;
+    }
+
+    // ── Process PDF ──
+    await sock.sendMessage(from, {
+        text: "⏳ আপনার NID প্রক্রিয়া করা হচ্ছে...\nঅনুগ্রহ করে একটু অপেক্ষা করুন।",
+    }, { quoted: m });
+
+    console.log(`📥 PDF from ${number}`);
+
+    // ── FIX: download এর জন্য unwrapped message use করো ──
+    const dlMsg = { ...m, message: msg };
+    const inputPdf = await downloadMediaMessage(dlMsg, "buffer", {});
+    console.log(`✅ PDF downloaded: ${inputPdf.length} bytes`);
+
+    // ── FIX: empty PDF check ──
+    if (!inputPdf || inputPdf.length < 100) {
+        throw new Error("PDF download failed or file is empty");
+    }
+
+    const apiRes = await extractNIDFromPDF(inputPdf);
+    const mapped = mapAPIData(apiRes);
+    console.log(`✅ Extracted: ${mapped.nameBangla} | ${mapped.nationalId}`);
+
+    // ── FIX: NID নম্বর না পেলে error ──
+    if (!mapped.nationalId && !mapped.nameBangla) {
+        throw new Error("NID তথ্য বের করা যায়নি। সঠিক NID PDF পাঠান।");
+    }
+
+    const cardPdf = await generateNIDCard(mapped);
+
+    recordStat(number, mapped.nameBangla || mapped.nameEnglish);
+
+    const name    = mapped.nameBangla || mapped.nameEnglish || "অজানা";
+    const nid     = mapped.nationalId || "N/A";
+    const pdfName = `NID_${nid}_${Date.now()}.pdf`;
+
+    await sock.sendMessage(from, {
+        document : cardPdf,
+        mimetype : "application/pdf",
+        fileName : pdfName,
+        caption  :
+            `✅ *NID কার্ড প্রস্তুত!*\n\n` +
+            `👤 নাম: ${name}\n` +
+            `🪪 NID: ${nid}\n\n` +
+            `📄 PDF টি Download করুন এবং Print করুন।`,
+    }, { quoted: m });
+
+    console.log(`✅ Card sent to ${number}`);
 }
 
 startBot().catch(err => console.error("Critical:", err));
@@ -675,14 +709,13 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 //  UTILS
 // ============================================================
 function parseCookies(str) {
-    // ✅ FIX #8: malformed cookie crash fix — try-catch + filter empty
     if (!str) return {};
     return Object.fromEntries(
         str.split(";")
            .map(c => c.trim())
-           .filter(c => c.includes("="))           // ✅ "=" ছাড়া entry skip
+           .filter(c => c.includes("="))
            .map(c => {
-               const idx = c.indexOf("=");         // ✅ শুধু প্রথম "=" এ split
+               const idx = c.indexOf("=");
                return [
                    decodeURIComponent(c.slice(0, idx).trim()),
                    decodeURIComponent(c.slice(idx + 1).trim()),
