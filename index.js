@@ -308,12 +308,15 @@ function mapAPIData(api) {
 }
 
 // ============================================================
-//  NID Card PDF Generate — nid-bn.php → Railway PDF API
+//  NID Card PDF Generate — URL mode (assets সঠিকভাবে load হবে)
 // ============================================================
 async function generateNIDCard(mappedData) {
 
-    // Step 1: nid-bn.php তে POST করে সরাসরি HTML নাও
-    const formData = new URLSearchParams({
+    // Step 1: nid-bn.php তে data সহ একটা URL বানাও
+    // Puppeteer এই URL load করবে — তাহলে assets/, CSS, JS সব ঠিকমতো আসবে
+    const BASE = "https://auto.onlinebd.top/bot";
+
+    const formParams = new URLSearchParams({
         nid        : mappedData.nationalId,
         pin        : "",
         pin_status : "disabled",
@@ -328,11 +331,15 @@ async function generateNIDCard(mappedData) {
         imageUrl12 : mappedData.userIMG,
         imageUrl22 : mappedData.signIMG,
         issueDate  : new Date().toLocaleDateString("en-GB"),
-    }).toString();
+    });
 
+    // Step 2: nid-bn.php তে POST করে একটা token/page URL পাও
+    // nid-bn.php POST only accept করে, তাই আমরা একটা
+    // intermediate "store" endpoint দরকার।
+    // সহজ সমাধান: HTML নিয়ে assets URL গুলো absolute করে দাও।
     const htmlRes = await axios.post(
-        CONFIG.API_GENERATE_URL,   // https://auto.onlinebd.top/bot/nid-bn.php
-        formData,
+        CONFIG.API_GENERATE_URL,
+        formParams.toString(),
         {
             headers     : { "Content-Type": "application/x-www-form-urlencoded" },
             timeout     : 30000,
@@ -340,11 +347,22 @@ async function generateNIDCard(mappedData) {
         }
     );
 
-    const html = htmlRes.data;
+    let html = htmlRes.data;
     if (!html || html.length < 200) throw new Error("Empty HTML from nid-bn.php");
-    console.log(`✅ HTML received from nid-bn.php: ${html.length} chars`);
+    console.log(`✅ HTML received: ${html.length} chars`);
 
-    // Step 2: Railway Puppeteer API তে HTML দাও → PDF পাও
+    // ── Relative URL → Absolute URL convert ──
+    // assets/css/, assets/js/, assets/media/ → absolute URL
+    // এটা করলে Puppeteer সব resource সঠিকভাবে load করতে পারবে
+    // quote chars: 0x27=single, 0x22=double
+    const Q = '[\x27\x22]';
+    html = html
+        .replace(new RegExp(Q + '(assets\/)', 'g'), (m, p1) => m[0] + BASE + '/assets/')
+        .replace(new RegExp(Q + '(photo\/)',  'g'), (m, p1) => m[0] + BASE + '/photo/');
+
+    console.log(`✅ HTML after URL fix: assets converted to absolute`);
+
+    // Step 3: Railway Puppeteer API তে HTML দাও → PDF পাও
     if (!CONFIG.PDF_API_URL) throw new Error("PDF_API_URL not set in environment");
 
     const pdfRes = await axios.post(
