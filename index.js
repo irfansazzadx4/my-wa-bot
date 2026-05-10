@@ -312,11 +312,8 @@ async function buildAndSaveHTML(mappedData) {
     let html = htmlRes.data;
     if (!html || html.length < 200) throw new Error("Empty HTML from nid-bn.php");
 
-    // relative → absolute URL
-    const BASE = "https://auto.onlinebd.top/bot";
-    html = html
-        .replace(/(['"])(assets\/)/g, `$1${BASE}/assets/`)
-        .replace(/(['"])(photo\/)/g,  `$1${BASE}/photo/`);
+    // relative → absolute URL (সব ধরনের pattern cover করা)
+    html = fixRelativePaths(html);
 
     // window.print() remove করো — user শুধু দেখবে
     html = html.replace(/window\.print\(\);?/g, "// print removed");
@@ -375,7 +372,14 @@ box-shadow:0 -3px 15px rgba(0,0,0,0.4);">
     const filepath = path.join(CONFIG.STORAGE_DIR, filename);
     fs.writeFileSync(filepath, html);
 
-    return CONFIG.BASE_URL + filename;
+    // Railway নিজের URL দিয়ে serve করো (SELF_URL env variable থেকে)
+    const serveBase = (CONFIG.SELF_URL || '').replace(/\/$/, '') + '/storage/';
+    const finalUrl  = serveBase ? serveBase + filename : CONFIG.BASE_URL + filename;
+
+    console.log('📁 Saved: ' + filepath);
+    console.log('🔗 URL: ' + finalUrl);
+
+    return finalUrl;
 }
 
 // ============================================================
@@ -408,10 +412,13 @@ async function generatePDFFromMapped(mappedData) {
     let html = htmlRes.data;
     if (!html || html.length < 200) throw new Error("Empty HTML from nid-bn.php");
 
-    const BASE = "https://auto.onlinebd.top/bot";
-    html = html
-        .replace(/(['"])(assets\/)/g, `$1${BASE}/assets/`)
-        .replace(/(['"])(photo\/)/g,  `$1${BASE}/photo/`);
+    // relative → absolute URL
+    html = fixRelativePaths(html);
+
+    // ✅ Font গুলো base64 করে HTML এ embed করো
+    // এতে Puppeteer server এ আলাদা font না থাকলেও কাজ করবে
+    html = await embedFontsInHTML(html);
+    console.log(`✅ Fonts embedded, HTML size: ${html.length} chars`);
 
     if (!CONFIG.PDF_API_URL) throw new Error("PDF_API_URL not set");
 
@@ -749,6 +756,108 @@ tbody tr:last-child td{border-bottom:none}tbody tr:hover{background:rgba(255,255
     <table><thead><tr><th>Number</th><th>নাম</th><th>Cards</th><th>শেষ ব্যবহার</th></tr></thead>
     <tbody>${statsRows}</tbody></table></div>
 </div></body></html>`;
+}
+
+
+// ============================================================
+//  FONT EMBED — Bangla + Arial font কে base64 করে HTML এ embed করো
+//  এতে Puppeteer আলাদা font খুঁজবে না, সব HTML এর ভেতরেই থাকবে
+// ============================================================
+async function embedFontsInHTML(html) {
+    const BASE = "https://auto.onlinebd.top/bot";
+
+    // Font URLs — server থেকে download করে base64 করা হবে
+    const fonts = [
+        {
+            url    : "https://auto.onlinebd.top/fonts/Bangla.ttf",
+            family : "Bangla",
+            weight : "normal",
+        },
+        {
+            url    : "https://auto.onlinebd.top/fonts/Arial.ttf",
+            family : "Arial",
+            weight : "normal",
+        },
+    ];
+
+    let fontCSS = "";
+
+    for (const font of fonts) {
+        try {
+            const res = await axios.get(font.url, {
+                responseType: "arraybuffer",
+                timeout: 15000,
+            });
+            const b64  = Buffer.from(res.data).toString("base64");
+            const mime = "font/truetype";
+            fontCSS += `
+@font-face {
+    font-family: '${font.family}';
+    src: url('data:${mime};base64,${b64}') format('truetype');
+    font-weight: ${font.weight};
+    font-style: normal;
+}`;
+            console.log(`✅ Font embedded: ${font.family} (${font.weight}) — ${Math.round(res.data.byteLength/1024)}KB`);
+        } catch (e) {
+            console.log(`⚠️ Font not found: ${font.url} — ${e.message}`);
+        }
+    }
+
+    const overrideCSS = `
+${fontCSS}
+
+/* Force fonts — same rule as nid-bn.php */
+* { font-family: Bangla, Arial, sans-serif !important; }
+.bn { font-family: Bangla, sans-serif !important; }
+.sans { font-family: Arial, sans-serif !important; }
+`;
+
+    // <head> এ inject করো
+    if (html.includes("</head>")) {
+        html = html.replace("</head>", `<style id="embedded-fonts">${overrideCSS}</style>\n</head>`);
+    } else {
+        html = `<style id="embedded-fonts">${overrideCSS}</style>\n` + html;
+    }
+
+    return html;
+}
+
+// ============================================================
+//  PATH FIX — relative → absolute URL
+// ============================================================
+function fixRelativePaths(html) {
+    const BASE = "https://auto.onlinebd.top/bot";
+
+    // সব ধরনের pattern cover করা:
+    // src="assets/..."   src='assets/...'   src=assets/...
+    // href="assets/..."  url(assets/...)
+    // photo/ এর জন্যও same
+
+    const patterns = [
+        // src="assets/ বা src='assets/
+        [/(src\s*=\s*["'])(assets\/)/gi,  `$1${BASE}/assets/`],
+        [/(href\s*=\s*["'])(assets\/)/gi, `$1${BASE}/assets/`],
+        [/(src\s*=\s*["'])(photo\/)/gi,   `$1${BASE}/photo/`],
+
+        // src=assets/ (quote ছাড়া)
+        [/(src\s*=\s*)(assets\/)/gi,  `$1${BASE}/assets/`],
+        [/(href\s*=\s*)(assets\/)/gi, `$1${BASE}/assets/`],
+        [/(src\s*=\s*)(photo\/)/gi,   `$1${BASE}/photo/`],
+
+        // url(assets/
+        [/(url\s*\(\s*["']?)(assets\/)/gi, `$1${BASE}/assets/`],
+        [/(url\s*\(\s*["']?)(photo\/)/gi,  `$1${BASE}/photo/`],
+    ];
+
+    for (const [regex, replacement] of patterns) {
+        html = html.replace(regex, replacement);
+    }
+
+    // double replace হয়ে গেলে fix করো
+    const doubled = new RegExp(BASE.replace(/\./g, '\\.') + '/' + BASE.replace(/\./g, '\\.').replace('https://', ''), 'g');
+    html = html.replace(doubled, BASE);
+
+    return html;
 }
 
 // ============================================================
