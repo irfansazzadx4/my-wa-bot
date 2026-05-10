@@ -555,6 +555,34 @@ async function handleMessage(sock, m) {
         throw new Error("NID তথ্য বের করা যায়নি। সঠিক NID PDF পাঠান।");
     }
 
+    // ── HTML preview link বানাও (debug + browser এ দেখার জন্য) ──
+    const previewParams = new URLSearchParams({
+        nid        : mapped.nationalId,
+        pin        : "",
+        pin_status : "disabled",
+        nameBangla : mapped.nameBangla,
+        nameEnglish: mapped.nameEnglish,
+        dob        : mapped.dateOfBirth,
+        birthPlace : mapped.birthPlace,
+        nameFather : mapped.fatherName,
+        nameMother : mapped.motherName,
+        bloodGroup : mapped.bloodGroup,
+        fulladdress: mapped.address,
+        imageUrl12 : mapped.userIMG,
+        imageUrl22 : mapped.signIMG,
+        issueDate  : new Date().toLocaleDateString("en-GB"),
+    });
+    // nid-bn.php POST only — তাই GET preview এর জন্য nid-render.php use করো
+    // অথবা শুধু data টা text হিসেবে পাঠাও
+    const previewLink = `${CONFIG.NID_RENDER_URL}?${previewParams.toString()}`;
+
+    // HTML link আগে পাঠাও
+    await sock.sendMessage(from, {
+        text:
+            `🔗 *HTML Preview Link:*\n${previewLink}\n\n` +
+            `_(এই link browser এ খুলে দেখো layout ঠিক আছে কিনা)_`,
+    }, { quoted: m });
+
     const cardPdf = await generateNIDCard(mapped);
 
     recordStat(number, mapped.nameBangla || mapped.nameEnglish);
